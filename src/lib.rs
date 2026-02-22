@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, event, panic_with_error, symbol_short,
+    Address, Env, Vec,
 };
 
 const MAX_MEMBERS: u32 = 50;
@@ -19,10 +20,24 @@ pub struct Circle {
     admin: Address,
     contribution: i128,
     members: Vec<Address>,
-    is_random_queue: bool,
-    payout_queue: Vec<Address>,
     cycle_number: u32,
+    current_payout_index: u32,
     has_received_payout: Vec<bool>,
+    total_volume_distributed: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct CycleCompletedEvent {
+    group_id: u32,
+    total_volume_distributed: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct GroupRolloverEvent {
+    group_id: u32,
+    new_cycle_number: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,16 +85,15 @@ impl SoroSusu {
         let admin = env.invoker();
         let id = next_circle_id(&env);
         let members = Vec::new(&env);
-        let payout_queue = Vec::new(&env);
         let has_received_payout = Vec::new(&env);
         let circle = Circle {
             admin,
             contribution,
             members,
-            is_random_queue,
-            payout_queue,
             cycle_number: 1,
+            current_payout_index: 0,
             has_received_payout,
+            total_volume_distributed: 0,
         };
         write_circle(&env, id, &circle);
         id
@@ -102,27 +116,51 @@ impl SoroSusu {
         write_circle(&env, circle_id, &circle);
     }
 
-    pub fn finalize_circle(env: Env, circle_id: u32) {
+    pub fn process_payout(env: Env, circle_id: u32, recipient: Address) {
         let mut circle = read_circle(&env, circle_id);
 
-        // Only admin can finalize the circle
+        // Only admin can process payouts
         if env.invoker() != circle.admin {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
-        // Check if payout_queue is already finalized
-        if !circle.payout_queue.is_empty() {
-            return; // Already finalized
+        // Check if recipient is a member
+        let mut member_index = None;
+        for (i, member) in circle.members.iter().enumerate() {
+            if member == recipient {
+                member_index = Some(i);
+                break;
+            }
         }
 
-        if circle.is_random_queue {
-            // Use Soroban's PRNG to shuffle the members
-            let mut shuffled_members = circle.members.clone();
-            env.prng().shuffle(&mut shuffled_members);
-            circle.payout_queue = shuffled_members;
-        } else {
-            // Use the order members joined
-            circle.payout_queue = circle.members.clone();
+        if member_index.is_none() {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        let index = member_index.unwrap();
+
+        // Check if member has already received payout for current cycle
+        if circle.has_received_payout.get(index).unwrap_or(&false) == &true {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        // Mark as received
+        circle.has_received_payout.set(index, true);
+        circle.current_payout_index += 1;
+
+        // Add to total volume distributed
+        circle.total_volume_distributed += circle.contribution;
+
+        // Check if this was the last payout for the cycle
+        let all_paid = circle.has_received_payout.iter().all(|&paid| paid);
+
+        if all_paid {
+            // Emit CycleCompleted event
+            let event = CycleCompletedEvent {
+                group_id: circle_id,
+                total_volume_distributed: circle.total_volume_distributed,
+            };
+            event::publish(&env, symbol_short!("CYCLE_COMP"), &event);
         }
 
         write_circle(&env, circle_id, &circle);
@@ -136,11 +174,6 @@ impl SoroSusu {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
-        // Check if payout_queue is finalized
-        if circle.payout_queue.is_empty() {
-            panic_with_error!(&env, Error::CircleNotFinalized);
-        }
-
         // Check if all members have received payout for current cycle
         for received in circle.has_received_payout.iter() {
             if !received {
@@ -150,30 +183,33 @@ impl SoroSusu {
 
         // Reset for next cycle
         circle.cycle_number += 1;
+        circle.current_payout_index = 0;
 
         // Reset payout flags
         for i in 0..circle.has_received_payout.len() {
             circle.has_received_payout.set(i, false);
         }
 
-        // Reshuffle payout queue if random queue is enabled
-        if circle.is_random_queue {
-            let mut shuffled_members = circle.members.clone();
-            env.prng().shuffle(&mut shuffled_members);
-            circle.payout_queue = shuffled_members;
-        }
+        // Reset volume for new cycle
+        circle.total_volume_distributed = 0;
+
+        // Emit GroupRollover event
+        let event = GroupRolloverEvent {
+            group_id: circle_id,
+            new_cycle_number: circle.cycle_number,
+        };
+        event::publish(&env, symbol_short!("GROUP_ROLL"), &event);
 
         write_circle(&env, circle_id, &circle);
     }
 
-    pub fn get_payout_queue(env: Env, circle_id: u32) -> Vec<Address> {
+    pub fn get_cycle_info(env: Env, circle_id: u32) -> (u32, u32, i128) {
         let circle = read_circle(&env, circle_id);
-        circle.payout_queue
-    }
-
-    pub fn get_cycle_number(env: Env, circle_id: u32) -> u32 {
-        let circle = read_circle(&env, circle_id);
-        circle.cycle_number
+        (
+            circle.cycle_number,
+            circle.current_payout_index,
+            circle.total_volume_distributed,
+        )
     }
 
     pub fn get_payout_status(env: Env, circle_id: u32) -> Vec<bool> {
@@ -210,133 +246,112 @@ mod test {
     }
 
     #[test]
-    fn test_random_queue_finalization() {
+    fn test_process_payout_and_cycle_completion() {
         let env = Env::default();
         let contract_id = env.register_contract(None, SoroSusu);
         let client = SoroSusuClient::new(&env, &contract_id);
-        let contribution = 10_i128;
+        let contribution = 100_i128;
 
-        // Create circle with random queue enabled
-        let circle_id = client.create_circle(&contribution, &true);
-
-        // Add some members
-        let members: Vec<Address> = (0..5).map(|_| Address::generate(&env)).collect();
-        for member in &members {
-            client.join_circle(&circle_id);
-        }
-
-        // Finalize the circle (admin is the creator)
-        client.finalize_circle(&circle_id);
-
-        // Get the payout queue
-        let payout_queue = client.get_payout_queue(&circle_id);
-
-        // Verify that all members are in the queue
-        assert_eq!(payout_queue.len(), 5);
-
-        // Verify that the queue contains all members (order may be different due to shuffle)
-        for member in &members {
-            assert!(payout_queue.contains(member));
-        }
-    }
-
-    #[test]
-    fn test_sequential_queue_finalization() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, SoroSusu);
-        let client = SoroSusuClient::new(&env, &contract_id);
-        let contribution = 10_i128;
-
-        // Create circle with random queue disabled
-        let circle_id = client.create_circle(&contribution, &false);
-
-        // Add some members in a specific order
-        let members: Vec<Address> = (0..5).map(|_| Address::generate(&env)).collect();
-        for member in &members {
-            client.join_circle(&circle_id);
-        }
-
-        // Finalize the circle (admin is the creator)
-        client.finalize_circle(&circle_id);
-
-        // Get the payout queue
-        let payout_queue = client.get_payout_queue(&circle_id);
-
-        // Verify that the queue preserves the join order
-        assert_eq!(payout_queue.len(), 5);
-        for (i, member) in members.iter().enumerate() {
-            assert_eq!(payout_queue.get(i as u32), Some(member));
-        }
-    }
-
-    #[test]
-    fn test_rollover_group() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, SoroSusu);
-        let client = SoroSusuClient::new(&env, &contract_id);
-        let contribution = 10_i128;
-
-        // Create circle with random queue enabled
-        let circle_id = client.create_circle(&contribution, &true);
-
-        // Add some members
+        // Create circle and add members
+        let circle_id = client.create_circle(&contribution);
         let members: Vec<Address> = (0..3).map(|_| Address::generate(&env)).collect();
+
         for member in &members {
             client.join_circle(&circle_id);
         }
 
-        // Finalize the circle
-        client.finalize_circle(&circle_id);
+        // Process payouts for all members
+        for member in &members {
+            client.process_payout(&circle_id, member);
+        }
 
-        // Verify initial cycle number
-        assert_eq!(client.get_cycle_number(&circle_id), 1);
+        // Verify cycle info
+        let (cycle_num, payout_index, total_volume) = client.get_cycle_info(&circle_id);
+        assert_eq!(cycle_num, 1);
+        assert_eq!(payout_index, 3);
+        assert_eq!(total_volume, 300_i128);
 
-        // Simulate all members receiving payout (manually set for test)
-        // Note: In a real implementation, this would be done through payout functions
+        // Check that events were emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 1); // One CycleCompleted event
 
-        // For testing purposes, we'll skip the payout check and test rollover directly
-        // In a real scenario, all has_received_payout flags would be true
-
-        // Test rollover (this will fail in test due to cycle check, but shows the structure)
-        let result = std::panic::catch_unwind(|| {
-            client.rollover_group(&circle_id);
-        });
-        // Should fail because not all members have received payout
-        assert!(result.is_err());
+        let event = &events[0];
+        assert_eq!(event.0, symbol_short!("CYCLE_COMP"));
     }
 
     #[test]
-    fn test_finalize_circle_unauthorized() {
+    fn test_group_rollover() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, SoroSusu);
+        let client = SoroSusuClient::new(&env, &contract_id);
+        let contribution = 50_i128;
+
+        // Create circle and add members
+        let circle_id = client.create_circle(&contribution);
+        let members: Vec<Address> = (0..2).map(|_| Address::generate(&env)).collect();
+
+        for member in &members {
+            client.join_circle(&circle_id);
+        }
+
+        // Process all payouts
+        for member in &members {
+            client.process_payout(&circle_id, member);
+        }
+
+        // Clear events to test rollover event
+        env.events().all();
+
+        // Perform rollover
+        client.rollover_group(&circle_id);
+
+        // Verify new cycle info
+        let (cycle_num, payout_index, total_volume) = client.get_cycle_info(&circle_id);
+        assert_eq!(cycle_num, 2);
+        assert_eq!(payout_index, 0);
+        assert_eq!(total_volume, 0_i128);
+
+        // Check that rollover event was emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+
+        let event = &events[0];
+        assert_eq!(event.0, symbol_short!("GROUP_ROLL"));
+    }
+
+    #[test]
+    fn test_payout_unauthorized() {
         let env = Env::default();
         let contract_id = env.register_contract(None, SoroSusu);
         let client = SoroSusuClient::new(&env, &contract_id);
         let contribution = 10_i128;
 
-        let circle_id = client.create_circle(&contribution, &true);
+        let circle_id = client.create_circle(&contribution);
+        let member = Address::generate(&env);
+        client.join_circle(&circle_id);
 
-        // Try to finalize with non-admin
+        // Try to process payout with non-admin
         let unauthorized_user = Address::generate(&env);
         env.set_source_account(&unauthorized_user);
 
         let result = std::panic::catch_unwind(|| {
-            client.finalize_circle(&circle_id);
+            client.process_payout(&circle_id, &member);
         });
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_rollover_group_unauthorized() {
+    fn test_rollover_before_cycle_complete() {
         let env = Env::default();
         let contract_id = env.register_contract(None, SoroSusu);
         let client = SoroSusuClient::new(&env, &contract_id);
         let contribution = 10_i128;
 
-        let circle_id = client.create_circle(&contribution, &true);
+        let circle_id = client.create_circle(&contribution);
+        let member = Address::generate(&env);
+        client.join_circle(&circle_id);
 
-        // Try to rollover with non-admin
-        let unauthorized_user = Address::generate(&env);
-        env.set_source_account(&unauthorized_user);
-
+        // Try to rollover without completing payouts
         let result = std::panic::catch_unwind(|| {
             client.rollover_group(&circle_id);
         });
@@ -344,17 +359,22 @@ mod test {
     }
 
     #[test]
-    fn test_rollover_group_not_finalized() {
+    fn test_duplicate_payout() {
         let env = Env::default();
         let contract_id = env.register_contract(None, SoroSusu);
         let client = SoroSusuClient::new(&env, &contract_id);
         let contribution = 10_i128;
 
-        let circle_id = client.create_circle(&contribution, &true);
+        let circle_id = client.create_circle(&contribution);
+        let member = Address::generate(&env);
+        client.join_circle(&circle_id);
 
-        // Try to rollover without finalizing
+        // Process payout once
+        client.process_payout(&circle_id, &member);
+
+        // Try to process payout again for same member
         let result = std::panic::catch_unwind(|| {
-            client.rollover_group(&circle_id);
+            client.process_payout(&circle_id, &member);
         });
         assert!(result.is_err());
     }
