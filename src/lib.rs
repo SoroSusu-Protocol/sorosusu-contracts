@@ -1,4 +1,5 @@
 #![no_std]
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
     Address, Env, String, Symbol, Vec,
@@ -45,6 +46,7 @@ pub enum DataKey {
     LastCreatedTimestamp(Address),
     SafetyDeposit(Address, u64),
     LendingPool,
+    ReputationHash(Address),
 }
 
 #[contracttype]
@@ -133,6 +135,9 @@ pub trait SoroSusuTrait {
     
     fn pair_with_member(env: Env, user: Address, buddy_address: Address);
     fn set_safety_deposit(env: Env, user: Address, circle_id: u64, amount: i128);
+
+    fn compute_reputation_hash(env: Env, user: Address, threshold: u32) -> soroban_sdk::Bytes;
+    fn verify_reputation(env: Env, user: Address, threshold: u32) -> bool;
 }
 
 // --- IMPLEMENTATION ---
@@ -432,6 +437,47 @@ impl SoroSusuTrait for SoroSusu {
         
         user_info.buddy = Some(buddy_address);
         env.storage().instance().set(&user_key, &user_info);
+    }
+
+    fn compute_reputation_hash(env: Env, user: Address, threshold: u32) -> soroban_sdk::Bytes {
+        let member_key = DataKey::Member(user.clone());
+        let member: Member = env.storage().instance().get(&member_key).expect("Member not found");
+
+        if member.contribution_count < threshold {
+            panic!("Reputation threshold not met");
+        }
+
+        // Build preimage: user bytes + threshold + contract address bytes
+        let mut preimage = soroban_sdk::Bytes::new(&env);
+        let user_bytes = user.clone().to_xdr(&env);
+        preimage.append(&user_bytes);
+
+        let threshold_arr = [
+            ((threshold >> 24) & 0xff) as u8,
+            ((threshold >> 16) & 0xff) as u8,
+            ((threshold >> 8) & 0xff) as u8,
+            (threshold & 0xff) as u8,
+        ];
+        let threshold_bytes = soroban_sdk::Bytes::from_slice(&env, &threshold_arr);
+        preimage.append(&threshold_bytes);
+
+        let contract_bytes = env.current_contract_address().to_xdr(&env);
+        preimage.append(&contract_bytes);
+
+        let hash = env.crypto().sha256(&preimage);
+        let hash_bytes = soroban_sdk::Bytes::from_slice(&env, hash.to_array().as_slice());
+
+        env.storage().instance().set(&DataKey::ReputationHash(user), &hash_bytes.clone());
+        hash_bytes
+    }
+
+    fn verify_reputation(env: Env, user: Address, threshold: u32) -> bool {
+        let member_key = DataKey::Member(user.clone());
+        if !env.storage().instance().has(&member_key) {
+            return false;
+        }
+        let member: Member = env.storage().instance().get(&member_key).expect("Member not found");
+        member.contribution_count >= threshold
     }
 
     fn set_safety_deposit(env: Env, user: Address, circle_id: u64, amount: i128) {
