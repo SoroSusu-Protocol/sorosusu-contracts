@@ -27,8 +27,15 @@ This update implements **Tiered Group Access** (Reputation-Gating) for the SoroS
     - Updated `pipeline_test.rs`, `buddy_system_test.rs`, and `collateral_test.rs` to reflect the new contract signatures.
 
 ## Security & Reliability
-- **Verification**: All 28+ tests in the suite now pass successfully.
+- **Verification**: All 30+ tests in the suite now pass successfully.
 - **Protection**: High-value circles (total cycle value >= 1000 XLM) are now double-gated by both **Collateral (20%)** and **Reputation (0-1000)**.
+- **Deterrence**: Unified Risk Profile ensures defaults have consequences across your SocialFi stack.
+
+## New Feature: Ecosystem-Wide Default Blacklist
+- **Global Blacklist Map**: Implemented a persistent map for blacklisted addresses.
+- **Automatic Flagging**: Users are automatically blacklisted when the `mark_member_defaulted` action is triggered by a circle creator or admin.
+- **Interoperability**: Added a read-only `is_blacklisted` function that external protocols can query to verify a user's status before allowing high-value actions.
+- **Governance Control**: Provided `update_blacklist_status` to allow admins to manage the blacklist (e.g., for rehabilitation).
 
 ## How to Verify
 Run the full test suite using:

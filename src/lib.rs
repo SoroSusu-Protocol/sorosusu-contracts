@@ -59,6 +59,7 @@ pub enum DataKey {
     MemberAtIndex(u64, u32),
     Reputation(Address),
     BadgeContract,
+    Blacklist(Address),
 }
 
 #[contracttype]
@@ -202,6 +203,10 @@ pub trait SoroSusuTrait {
 
     // Oracle function
     fn get_reliability_score(env: Env, user: Address) -> u32;
+
+    // Blacklist functions
+    fn is_blacklisted(env: Env, user: Address) -> bool;
+    fn update_blacklist_status(env: Env, admin: Address, user: Address, status: bool);
 }
 
 // --- IMPLEMENTATION ---
@@ -798,7 +803,10 @@ impl SoroSusuTrait for SoroSusu {
         member_info.status = MemberStatus::Defaulted;
         env.storage().instance().set(&member_key, &member_info);
 
-        // Add to defaulted members list
+        // Add to global blacklist across ecosystem
+        env.storage().instance().set(&DataKey::Blacklist(member.clone()), &true);
+
+        // Add to defaulted members list for this circle
         let defaulted_key = DataKey::DefaultedMembers(circle_id);
         let mut defaulted_members: Vec<Address> = env.storage().instance().get(&defaulted_key).unwrap_or(Vec::new(&env));
         
@@ -851,5 +859,18 @@ impl SoroSusuTrait for SoroSusu {
         };
 
         on_time_ratio + cycles_score + volume_score
+    }
+
+    fn is_blacklisted(env: Env, user: Address) -> bool {
+        env.storage().instance().get(&DataKey::Blacklist(user)).unwrap_or(false)
+    }
+
+    fn update_blacklist_status(env: Env, admin: Address, user: Address, status: bool) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Unauthorized");
+        }
+        env.storage().instance().set(&DataKey::Blacklist(user), &status);
     }
 }
