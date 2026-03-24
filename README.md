@@ -11,10 +11,53 @@ A trustless Rotating Savings and Credit Association (ROSCA) built on Stellar Sor
 - Join existing circles
 - Deposit USDC/XLM securely
 - Automated payouts (Coming Soon)
+- Immutable audit log for sensitive actions
+
+## Audit Log
+
+Sensitive actions now write immutable on-chain audit entries with:
+- actor
+- action
+- timestamp
+- resource_id
+
+Current action coverage in this contract:
+- Governance proposal creation
+- Governance voting
+- Social recovery proposal creation
+- Social recovery voting and execution
+- Admin actions such as member ejection, insurance coverage, lending pool changes, and round finalization
+
+Audit entries are stored in append-only contract storage and emitted as AUDIT events. The contract also maintains secondary indexes for querying by actor and resource.
+
+### Query Methods
+
+- `get_audit_entry(id)`
+- `query_audit_by_actor(actor, start_time, end_time, offset, limit)`
+- `query_audit_by_resource(resource_id, start_time, end_time, offset, limit)`
+- `query_audit_by_time(start_time, end_time, offset, limit)`
+
+### Query Semantics
+
+- Time bounds are inclusive
+- Results are returned in insertion order
+- Queries are paginated with `offset` and `limit`
+- Maximum page size is capped in-contract to avoid oversized responses
+
+## Protocol fee (monetization)
+
+The protocol takes a configurable fee from every payout (e.g. 0.5%).
+
+- **fee_basis_points**: Fee rate in basis points (e.g. `50` = 0.5%). Set via `set_protocol_fee` (admin only). Capped at 10,000 (100%).
+- **treasury_address**: Recipient of the fee. Set together with the fee; required when fee &gt; 0.
+- Payouts deduct the fee from the payout amount: the recipient receives `payout_amount - fee`, and the fee is transferred to `treasury_address`.
+
+After deploy, call `initialize(admin)` once, then `set_protocol_fee(fee_basis_points, treasury)` to enable fees. When implementing the payout flow, use `compute_and_transfer_payout(env, token, from, recipient, gross_payout)` so every payout is fee-deducted and the fee is sent to the treasury.
 
 ## How to Build
 ```bash
 cargo build --target wasm32-unknown-unknown --release
+```
 
 ## Troubleshooting
 
@@ -30,6 +73,7 @@ Code	Error	Description
 1003	AlreadyJoined	Member already part of circle
 1004	CircleNotFound	Invalid circle ID
 1005	Unauthorized	Caller not permitted to perform action
+1006	InvalidFeeConfig	Fee basis points &gt; 10,000 or treasury not set when fee &gt; 0
 1️⃣ Cycle Not Complete
 
 Error: CycleNotComplete
@@ -93,3 +137,5 @@ Resolution:
 Verify admin or member role
 
 Ensure correct signing address
+
+check enforecd and verified,but upload on different branch comment
