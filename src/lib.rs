@@ -27,6 +27,9 @@ pub enum Error {
     DisputeNotFound = 16,
     DisputeAlreadyResolved = 17,
     InvalidFeeConfig = 18,
+    CreditScoreTooLow = 19,
+    AdvanceExceedsLimit = 20,
+    ActiveAdvanceExists = 21,
 }
 
 // --- CONSTANTS ---
@@ -53,6 +56,7 @@ pub enum DataKey {
     ProtocolFeeBps,
     ProtocolTreasury,
     UserStats(Address),
+    CreditAdvance(u64, Address),
 }
 
 #[contracttype]
@@ -71,6 +75,13 @@ pub struct UserStats {
     pub total_volume_saved: i128,
     pub on_time_contributions: u32,
     pub late_contributions: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct CreditAdvance {
+    pub principal: i128,
+    pub fee: i128,
 }
 
 #[contracttype]
@@ -172,6 +183,8 @@ pub trait SoroSusuTrait {
     fn vote_arbitrator(env: Env, user: Address, circle_id: u64);
 
     fn transfer_membership(env: Env, old_user: Address, new_user: Address, circle_id: u64);
+
+    fn approve_credit_advance(env: Env, caller: Address, circle_id: u64, member: Address, amount: i128);
 
     fn slash_user_credit(env: Env, admin: Address, user: Address, late_penalty_count: u32);
 
@@ -741,6 +754,58 @@ impl SoroSusuTrait for SoroSusu {
         nft_client.mint(&new_user, &token_id);
     }
 
+    fn approve_credit_advance(env: Env, caller: Address, circle_id: u64, member: Address, amount: i128) {
+        caller.require_auth();
+        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
+        
+        if caller != circle.creator {
+            panic!("Unauthorized");
+        }
+
+        if amount <= 0 {
+            panic!("InvalidAmount");
+        }
+
+        let score = Self::get_user_reliability_score(env.clone(), member.clone());
+        if score < 500 {
+            panic!("Credit score too low");
+        }
+
+        let stats = Self::get_user_stats(env.clone(), member.clone());
+        if amount > stats.total_volume_saved {
+            panic!("Amount exceeds total volume saved");
+        }
+
+        let member_key = DataKey::Member(member.clone());
+        let member_info: Member = env.storage().instance().get(&member_key).expect("Member not found");
+        
+        let expected_payout = circle.contribution_amount * circle.member_count as i128 * member_info.tier_multiplier as i128;
+        if amount > expected_payout / 2 {
+            panic!("Cannot advance more than 50% of expected payout");
+        }
+
+        let advance_key = DataKey::CreditAdvance(circle_id, member.clone());
+        if env.storage().instance().has(&advance_key) {
+            panic!("Already has an active advance");
+        }
+
+        let fee = (amount * 5) / 100; // 5% interest fee
+
+        let token_client = token::Client::new(&env, &circle.token);
+        token_client.transfer(&env.current_contract_address(), &member, &amount);
+
+        let advance = CreditAdvance {
+            principal: amount,
+            fee,
+        };
+        env.storage().instance().set(&advance_key, &advance);
+
+        env.events().publish(
+            (Symbol::new(&env, "CREDIT_ADVANCE"), circle_id, member.clone()),
+            amount
+        );
+    }
+
     fn slash_user_credit(env: Env, admin: Address, user: Address, late_penalty_count: u32) {
         admin.require_auth();
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
@@ -1084,5 +1149,42 @@ mod tests {
 
         // After a successful on-time deposit, score surges past the 500 threshold
         assert_eq!(lending_client.can_borrow(&oracle_id, &user), true);
+    }
+
+    #[test]
+    fn test_sub_susu_credit_line() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        
+        let token_contract = env.register_contract(None, MockToken);
+        let nft_contract = env.register_contract(None, MockNft);
+        
+        let contract_id = env.register_contract(None, SoroSusu);
+        let client = SoroSusuClient::new(&env, &contract_id);
+        
+        env.mock_all_auths();
+        client.init(&admin);
+        
+        let circle_id = client.create_circle(&creator, &1000, &2, &token_contract, &86400, &100, &nft_contract, &arbitrator);
+        
+        client.join_circle(&creator, &circle_id, &1, &None);
+        client.join_circle(&user, &circle_id, &1, &None);
+        
+        // Payout to creator first to establish history and boost user score
+        client.deposit(&creator, &circle_id);
+        client.deposit(&user, &circle_id);
+        client.finalize_round(&creator, &circle_id);
+        client.claim_pot(&creator, &circle_id);
+        
+        // Now user asks for credit advance. Expected payout = 2000. Limit is 1000.
+        client.approve_credit_advance(&creator, &circle_id, &user, &1000);
+        
+        client.deposit(&creator, &circle_id);
+        client.deposit(&user, &circle_id);
+        client.finalize_round(&creator, &circle_id);
+        client.claim_pot(&user, &circle_id); // debt is deducted seamlessly!
     }
 }
