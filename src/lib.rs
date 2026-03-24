@@ -88,6 +88,9 @@ const MIN_TRUST_SCORE_FOR_VOUCH: u32 = 70; // Minimum trust score to vouch
 const VOUCH_COLLATERAL_MULTIPLIER: u32 = 1500; // 15% of cycle value as vouch collateral
 const VOUCH_EXPIRY_SECONDS: u64 = 2592000; // 30 days
 const MAX_VOUCHES_PER_MEMBER: u32 = 3; // Maximum concurrent vouches
+const INACTIVITY_THRESHOLD_MONTHS: u64 = 18; // 18 months inactivity threshold
+const DECAY_PERCENTAGE_PER_MONTH: u32 = 50; // 5% decay per month (50 basis points)
+const SECONDS_PER_MONTH: u64 = 2592000; // 30 days in seconds
 // Guarantor-related constants
 const MIN_GUARANTOR_REPUTATION: u32 = 100; // Minimum reputation score to become a guarantor
 const MAX_VOUCHURES_PER_GUARANTOR: u32 = 5; // Maximum concurrent vouchers per guarantor
@@ -149,6 +152,8 @@ pub struct Reputation {
     VouchCollateral(Address, u64), // vouchee -> vouch_id
     VouchStats(Address), // voucher stats
     VouchReverseMapping(Address, u64), // vouchee -> voucher (for efficient lookup)
+    LastActivityTimestamp(Address), // Track user's last activity for reputation decay
+    DecayHistory(Address, u64), // Track decay applications per user per circle
     Blacklist(Address),
     Reputation(Address),
 }
@@ -350,6 +355,8 @@ pub struct SocialCapital {
     pub leniency_received: u32,
     pub voting_participation: u32,
     pub trust_score: u32,
+    pub last_activity_timestamp: u64,
+    pub decay_count: u32,
 }
 
 #[contracttype]
@@ -769,6 +776,11 @@ fn next_active_member_index(env: &Env, circle: &CircleInfo, start_index: u32) ->
     fn release_vouch_collateral(env: Env, caller: Address, circle_id: u64, vouchee: Address);
     fn get_vouch_record(env: Env, voucher: Address, vouchee: Address) -> VouchRecord;
     fn get_vouch_stats(env: Env, voucher: Address) -> VouchStats;
+    
+    // Reputation decay functions
+    fn apply_reputation_decay(env: Env, member: Address, circle_id: u64);
+    fn update_activity_timestamp(env: Env, member: Address, circle_id: u64);
+    fn get_reputation_with_decay(env: Env, member: Address, circle_id: u64) -> SocialCapital;
     // Guarantor functions
     fn register_guarantor(env: Env, user: Address, initial_collateral: i128);
     fn update_guarantor_reputation(env: Env, admin: Address, guarantor: Address, new_score: u32);
@@ -1354,6 +1366,9 @@ impl SoroSusuTrait for SoroSusu {
         
         env.storage().instance().set(&member_key, &member);
         env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
+        
+        // Update activity timestamp for reputation decay
+        Self::update_activity_timestamp(&env, user, circle_id);
 
         // Update Reputation (Issue 71)
         // Update Reputation
@@ -2521,6 +2536,9 @@ impl SoroSusuTrait for SoroSusu {
             leniency_given: 0,
             leniency_received: 0,
             voting_participation: 0,
+            trust_score: 50, // Start with neutral score
+            last_activity_timestamp: current_time,
+            decay_count: 0,
             trust_score: 50,
         });
         social_capital.voting_participation += 1;
@@ -2533,6 +2551,9 @@ impl SoroSusuTrait for SoroSusu {
         }
         
         env.storage().instance().set(&social_capital_key, &social_capital);
+        
+        // Update activity timestamp for reputation decay
+        Self::update_activity_timestamp(&env, voter, circle_id);
 
         let total_possible_votes = (circle.member_count - 1) as u32;
         let votes_needed_for_majority = (total_possible_votes * SIMPLE_MAJORITY_THRESHOLD) / 100;
@@ -2567,12 +2588,83 @@ impl SoroSusuTrait for SoroSusu {
         env.storage().instance().set(&request_key, &request);
     }
 
+    fn finalize_leniency_vote_internal(&env: &Env, circle_id: &u64, requester: &Address, request: &mut LeniencyRequest) {
+        // Calculate voting results
+        let total_possible_votes = request.total_votes_cast;
+        let minimum_participation = (total_possible_votes * MINIMUM_VOTING_PARTICIPATION) / 100;
+        
+        let mut final_status = LeniencyRequestStatus::Rejected;
+        
+        if request.total_votes_cast >= minimum_participation {
+            let approval_percentage = (request.approve_votes * 100) / request.total_votes_cast;
+            if approval_percentage >= SIMPLE_MAJORITY_THRESHOLD {
+                final_status = LeniencyRequestStatus::Approved;
+                
+                // Apply grace period extension
+                let circle_key = DataKey::Circle(*circle_id);
+                let mut circle: CircleInfo = env.storage().instance().get(&circle_key).expect("Circle not found");
+                
+                let extension_seconds = request.extension_hours * 3600;
+                let new_deadline = circle.deadline_timestamp + extension_seconds;
+                circle.deadline_timestamp = new_deadline;
+                circle.grace_period_end = Some(new_deadline);
+                
+                env.storage().instance().set(&circle_key, &circle);
+                
+                // Update requester's social capital
+                let social_capital_key = DataKey::SocialCapital(requester.clone(), *circle_id);
+                let mut social_capital: SocialCapital = env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
+                    member: requester.clone(),
+                    circle_id: *circle_id,
+                    leniency_given: 0,
+                    leniency_received: 0,
+                    voting_participation: 0,
+                    trust_score: 50,
+                    last_activity_timestamp: current_time,
+                    decay_count: 0,
+                });
+                social_capital.leniency_received += 1;
+                social_capital.trust_score = (social_capital.trust_score + 5).min(100); // Bonus for receiving leniency
+                env.storage().instance().set(&social_capital_key, &social_capital);
+            }
+        }
+        
+        request.status = final_status;
+
+        // Update leniency stats
+        let stats_key = DataKey::LeniencyStats(*circle_id);
+        let mut stats: LeniencyStats = env.storage().instance().get(&stats_key).unwrap_or(LeniencyStats {
+            total_requests: 0,
+            approved_requests: 0,
+            rejected_requests: 0,
+            expired_requests: 0,
+            average_participation: 0,
+        });
+
+        match final_status {
+            LeniencyRequestStatus::Approved => stats.approved_requests += 1,
+            LeniencyRequestStatus::Rejected => stats.rejected_requests += 1,
+            LeniencyRequestStatus::Expired => stats.expired_requests += 1,
+            _ => {}
+        }
+
+        // Update average participation
+        if stats.total_requests > 0 {
+            let total_participation = stats.average_participation * (stats.total_requests - 1) + request.total_votes_cast;
+            stats.average_participation = total_participation / stats.total_requests;
+        }
+
+        env.storage().instance().set(&stats_key, &stats);
+    }
+
     fn get_leniency_request(env: Env, circle_id: u64, requester: Address) -> LeniencyRequest {
         let request_key = DataKey::LeniencyRequest(circle_id, requester);
         env.storage().instance().get(&request_key).expect("Leniency request not found")
     }
 
     fn get_social_capital(env: Env, member: Address, circle_id: u64) -> SocialCapital {
+        // Use the new decay-aware function
+        Self::get_reputation_with_decay(env, member, circle_id)
         let social_capital_key = DataKey::SocialCapital(member.clone(), circle_id);
         env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
             member,
@@ -2993,6 +3085,8 @@ impl SoroSusuTrait for SoroSusu {
             leniency_received: 0,
             voting_participation: 0,
             trust_score: 50,
+            last_activity_timestamp: current_time,
+            decay_count: 0,
         });
         
         if social_capital.trust_score < MIN_TRUST_SCORE_FOR_VOUCH {
@@ -3067,6 +3161,9 @@ impl SoroSusuTrait for SoroSusu {
         let mut updated_social_capital = social_capital;
         updated_social_capital.trust_score = (updated_social_capital.trust_score + 3).min(100);
         env.storage().instance().set(&social_capital_key, &updated_social_capital);
+        
+        // Update activity timestamp for reputation decay
+        Self::update_activity_timestamp(&env, voucher, circle_id);
     }
     
     fn slash_vouch_collateral(env: Env, caller: Address, circle_id: u64, vouchee: Address) {
@@ -3125,6 +3222,7 @@ impl SoroSusuTrait for SoroSusu {
         
         // Decrease voucher's trust score due to slash
         let social_capital_key = DataKey::SocialCapital(voucher.clone(), circle_id);
+        let current_time = env.ledger().timestamp();
         let mut social_capital: SocialCapital = env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
             member: voucher.clone(),
             circle_id,
@@ -3132,6 +3230,8 @@ impl SoroSusuTrait for SoroSusu {
             leniency_received: 0,
             voting_participation: 0,
             trust_score: 50,
+            last_activity_timestamp: current_time,
+            decay_count: 0,
         });
         social_capital.trust_score = (social_capital.trust_score - 10).max(0); // Significant penalty for slash
         env.storage().instance().set(&social_capital_key, &social_capital);
@@ -3189,6 +3289,7 @@ impl SoroSusuTrait for SoroSusu {
         
         // Increase voucher's trust score due to successful vouch
         let social_capital_key = DataKey::SocialCapital(voucher.clone(), circle_id);
+        let current_time = env.ledger().timestamp();
         let mut social_capital: SocialCapital = env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
             member: voucher.clone(),
             circle_id,
@@ -3196,6 +3297,8 @@ impl SoroSusuTrait for SoroSusu {
             leniency_received: 0,
             voting_participation: 0,
             trust_score: 50,
+            last_activity_timestamp: current_time,
+            decay_count: 0,
         });
         social_capital.trust_score = (social_capital.trust_score + 5).min(100); // Bonus for successful vouch
         env.storage().instance().set(&social_capital_key, &social_capital);
@@ -3223,6 +3326,90 @@ impl SoroSusuTrait for SoroSusu {
             total_collateral_lost: 0,
         })
     }
+    
+    // --- REPUTATION DECAY IMPLEMENTATION ---
+    
+    fn apply_reputation_decay(env: Env, member: Address, circle_id: u64) {
+        let current_time = env.ledger().timestamp();
+        let social_capital_key = DataKey::SocialCapital(member.clone(), circle_id);
+        let mut social_capital: SocialCapital = env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
+            member: member.clone(),
+            circle_id,
+            leniency_given: 0,
+            leniency_received: 0,
+            voting_participation: 0,
+            trust_score: 50,
+            last_activity_timestamp: current_time,
+            decay_count: 0,
+        });
+        
+        // Check if member has been inactive for more than 18 months
+        let months_inactive = if current_time > social_capital.last_activity_timestamp {
+            (current_time - social_capital.last_activity_timestamp) / SECONDS_PER_MONTH
+        } else {
+            0
+        };
+        
+        if months_inactive >= INACTIVITY_THRESHOLD_MONTHS {
+            let months_to_decay = months_inactive - INACTIVITY_THRESHOLD_MONTHS + 1; // +1 to start decay immediately after threshold
+            
+            // Calculate total decay: 5% per month
+            let total_decay_percentage = DECAY_PERCENTAGE_PER_MONTH * months_to_decay as u32;
+            
+            // Apply decay to trust score
+            let decay_amount = (social_capital.trust_score * total_decay_percentage) / 10000;
+            social_capital.trust_score = (social_capital.trust_score - decay_amount).max(0);
+            social_capital.decay_count += months_to_decay as u32;
+            
+            // Store decay history
+            let decay_history_key = DataKey::DecayHistory(member.clone(), circle_id);
+            env.storage().instance().set(&decay_history_key, &current_time);
+            
+            // Update social capital
+            env.storage().instance().set(&social_capital_key, &social_capital);
+        }
+    }
+    
+    fn update_activity_timestamp(env: Env, member: Address, circle_id: u64) {
+        let current_time = env.ledger().timestamp();
+        let social_capital_key = DataKey::SocialCapital(member.clone(), circle_id);
+        let mut social_capital: SocialCapital = env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
+            member: member.clone(),
+            circle_id,
+            leniency_given: 0,
+            leniency_received: 0,
+            voting_participation: 0,
+            trust_score: 50,
+            last_activity_timestamp: current_time,
+            decay_count: 0,
+        });
+        
+        // Update activity timestamp
+        social_capital.last_activity_timestamp = current_time;
+        
+        // Store updated social capital
+        env.storage().instance().set(&social_capital_key, &social_capital);
+        
+        // Also store global activity timestamp for easy lookup
+        let activity_key = DataKey::LastActivityTimestamp(member);
+        env.storage().instance().set(&activity_key, &current_time);
+    }
+    
+    fn get_reputation_with_decay(env: Env, member: Address, circle_id: u64) -> SocialCapital {
+        // Apply decay first, then return the updated social capital
+        Self::apply_reputation_decay(env, member.clone(), circle_id);
+        
+        let social_capital_key = DataKey::SocialCapital(member, circle_id);
+        env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
+            member,
+            circle_id,
+            leniency_given: 0,
+            leniency_received: 0,
+            voting_participation: 0,
+            trust_score: 50,
+            last_activity_timestamp: env.ledger().timestamp(),
+            decay_count: 0,
+        })
 
     fn get_reliability_score(env: Env, user: Address) -> u32 {
         let rep_key = DataKey::Reputation(user.clone());
