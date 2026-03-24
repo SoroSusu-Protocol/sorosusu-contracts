@@ -38,10 +38,10 @@ fn social_recovery_requires_more_than_seventy_percent_votes() {
 
     let circle_id = client.create_circle(&creator, &1_000, &6, &token, &604_800, &0, &nft_contract);
 
-    client.join_circle(&member1, &circle_id, &1);
-    client.join_circle(&member2, &circle_id, &1);
-    client.join_circle(&member3, &circle_id, &1);
-    client.join_circle(&old_member, &circle_id, &1);
+    client.join_circle(&member1, &circle_id, &1, &None);
+    client.join_circle(&member2, &circle_id, &1, &None);
+    client.join_circle(&member3, &circle_id, &1, &None);
+    client.join_circle(&old_member, &circle_id, &1, &None);
 
     // Proposal auto-votes for proposer: 1/4 = 25%
     client.propose_address_change(&member1, &circle_id, &old_member, &new_member);
@@ -99,9 +99,9 @@ fn social_recovery_rejects_new_address_if_already_member() {
     client.init(&admin);
     let circle_id = client.create_circle(&creator, &1_000, &6, &token, &604_800, &0, &nft_contract);
 
-    client.join_circle(&proposer, &circle_id, &1);
-    client.join_circle(&old_member, &circle_id, &1);
-    client.join_circle(&existing_member, &circle_id, &1);
+    client.join_circle(&proposer, &circle_id, &1, &None);
+    client.join_circle(&old_member, &circle_id, &1, &None);
+    client.join_circle(&existing_member, &circle_id, &1, &None);
 
     client.propose_address_change(&proposer, &circle_id, &old_member, &existing_member);
 }
