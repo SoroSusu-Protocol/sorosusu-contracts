@@ -730,6 +730,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "collateral_bps"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "contribution_amount"
                               },
                               "val": {
@@ -786,6 +794,12 @@
                               "val": {
                                 "u64": 86400
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "grace_period_end"
+                              },
+                              "val": "void"
                             },
                             {
                               "key": {
@@ -848,6 +862,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "leniency_enabled"
+                              },
+                              "val": {
+                                "bool": true
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "max_members"
                               },
                               "val": {
@@ -887,6 +909,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "proposal_count"
+                              },
+                              "val": {
+                                "u64": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "proposal_votes_bitmap"
                               },
                               "val": {
@@ -899,6 +929,14 @@
                               },
                               "val": {
                                 "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "quadratic_voting_enabled"
+                              },
+                              "val": {
+                                "bool": false
                               }
                             },
                             {
@@ -923,10 +961,29 @@
                             },
                             {
                               "key": {
+                                "symbol": "requires_collateral"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "token"
                               },
                               "val": {
                                 "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "total_cycle_value"
+                              },
+                              "val": {
+                                "i128": {
+                                  "hi": 0,
+                                  "lo": 2000
+                                }
                               }
                             }
                           ]
