@@ -1,6 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-
+    contract, contractclient, contractimpl, contracttype, contracterror,
+    symbol_short, token, Address, Env, String, Symbol, Vec,
 };
 
 // --- ERROR CODES ---
@@ -60,11 +61,20 @@ pub enum DataKey {
     SafetyDeposit(Address, u64),
     GroupReserve,
     LendingPool,
-
-
-#[contracttype]
-#[derive(Clone)]
-
+    CycleBadge(Address, u64),
+    UserStats(Address),
+    ProtocolFeeBps,
+    ProtocolTreasury,
+    CollateralVault(Address, u64),
+    AuditCount,
+    AuditEntry(u64),
+    AuditAll,
+    AuditByActor(Address),
+    AuditByResource(u64),
+    SocialCapital(Address, u64),
+    LeniencyStats(u64),
+    Proposal(u64),
+    DefaultedMembers(u64),
 }
 
 #[contracttype]
@@ -353,7 +363,21 @@ pub struct CircleInfo {
     pub nft_contract: Address,
     pub is_round_finalized: bool,
     pub current_pot_recipient: Option<Address>,
-
+    pub requires_collateral: bool,
+    pub collateral_bps: u32,
+    pub member_addresses: Vec<Address>,
+    pub proposed_late_fee_bps: u32,
+    pub proposal_votes_bitmap: u64,
+    pub recovery_old_address: Option<Address>,
+    pub recovery_new_address: Option<Address>,
+    pub recovery_votes_bitmap: u64,
+    pub quadratic_voting_enabled: bool,
+    pub arbitrator: Address,
+    pub grace_period_end: u64,
+    pub proposal_count: u32,
+    pub leniency_enabled: bool,
+    pub dissolution_status: u32,
+    pub dissolution_deadline: u64,
 }
 
 // --- CONTRACT CLIENTS ---
@@ -377,10 +401,21 @@ pub struct AuditEntry {
     pub resource_id: u64,
 }
 
+// --- CYCLE COMPLETION NFT BADGE ---
+
+#[contracttype]
+#[derive(Clone)]
+pub struct NftBadgeMetadata {
+    pub volume_tier: u32,        // 1=Bronze, 2=Silver, 3=Gold based on total_volume_saved
+    pub perfect_attendance: bool, // true if zero late contributions
+    pub group_lead_status: bool,  // true if member is the circle creator
+}
+
 #[contractclient(name = "SusuNftClient")]
 pub trait SusuNftTrait {
     fn mint(env: Env, to: Address, token_id: u128);
     fn burn(env: Env, from: Address, token_id: u128);
+    fn mint_badge(env: Env, to: Address, token_id: u128, metadata: NftBadgeMetadata);
 }
 
 #[contractclient(name = "LendingPoolClient")]
@@ -392,6 +427,7 @@ pub trait LendingPoolTrait {
 pub trait SoroSusuTrait {
     fn init(env: Env, admin: Address);
     fn set_lending_pool(env: Env, admin: Address, pool: Address);
+    fn set_protocol_fee(env: Env, admin: Address, fee_basis_points: u32, treasury: Address);
 
     fn create_circle(
         env: Env,
@@ -441,7 +477,10 @@ pub trait SoroSusuTrait {
 
 // --- IMPLEMENTATION ---
 
-
+fn append_audit_index(env: &Env, key: DataKey, audit_id: u64) {
+    let mut ids: Vec<u64> = env.storage().instance().get(&key).unwrap_or(Vec::new(env));
+    ids.push_back(audit_id);
+    env.storage().instance().set(&key, &ids);
 }
 
 fn write_audit(env: &Env, actor: &Address, action: AuditAction, resource_id: u64) {
@@ -464,42 +503,6 @@ fn write_audit(env: &Env, actor: &Address, action: AuditAction, resource_id: u64
     append_audit_index(env, DataKey::AuditAll, audit_count);
     append_audit_index(env, DataKey::AuditByActor(actor.clone()), audit_count);
     append_audit_index(env, DataKey::AuditByResource(resource_id), audit_count);
-        let mut circle_count: u64 = env.storage().instance().get(&DataKey::CircleCount).unwrap_or(0);
-        circle_count += 1;
-
-        let new_circle = CircleInfo {
-            id: circle_count,
-            creator: creator.clone(),
-            contribution_amount: amount,
-            max_members,
-            member_count: 0,
-            current_recipient_index: 0,
-            is_active: true,
-            token,
-            deadline_timestamp: current_time + cycle_duration,
-            cycle_duration,
-            contribution_bitmap: 0,
-            insurance_balance: 0,
-            insurance_fee_bps,
-            is_insurance_used: false,
-            late_fee_bps: 100, // 1%
-            nft_contract,
-            is_round_finalized: false,
-            current_pot_recipient: None,
-            leniency_enabled: true,
-            grace_period_end: None,
-            quadratic_voting_enabled: max_members >= MIN_GROUP_SIZE_FOR_QUADRATIC,
-            proposal_count: 0,
-            dissolution_status: DissolutionStatus::NotInitiated,
-            dissolution_deadline: None,
-        };
-        // Check if member is defaulted
-        let defaulted_key = DataKey::DefaultedMembers(circle_id);
-        let defaulted_members: Vec<Address> = env.storage().instance().get(&defaulted_key).unwrap_or(Vec::new(&env));
-        
-        if !defaulted_members.contains(&member) {
-            panic!("Member not defaulted");
-        }
 
     env.events().publish(
         (symbol_short!("AUDIT"), actor.clone(), resource_id),
@@ -650,7 +653,7 @@ fn finalize_leniency_vote_internal(
 
             let extension_seconds = request.extension_hours * 3600;
             let new_deadline = circle.deadline_timestamp + extension_seconds;
-            circle.grace_period_end = Some(new_deadline);
+            circle.grace_period_end = new_deadline;
 
             env.storage().instance().set(&circle_key, &circle);
 
@@ -805,7 +808,21 @@ impl SoroSusuTrait for SoroSusu {
             nft_contract,
             is_round_finalized: false,
             current_pot_recipient: None,
-
+            requires_collateral,
+            collateral_bps,
+            member_addresses: Vec::new(&env),
+            proposed_late_fee_bps: 0,
+            proposal_votes_bitmap: 0,
+            recovery_old_address: None,
+            recovery_new_address: None,
+            recovery_votes_bitmap: 0,
+            quadratic_voting_enabled: max_members >= MIN_GROUP_SIZE_FOR_QUADRATIC,
+            arbitrator,
+            grace_period_end: 0,
+            proposal_count: 0,
+            leniency_enabled: true,
+            dissolution_status: 0,
+            dissolution_deadline: 0,
         };
 
         env.storage()
@@ -897,8 +914,14 @@ impl SoroSusuTrait for SoroSusu {
         let current_time = env.ledger().timestamp();
         let base_amount = circle.contribution_amount * member.tier_multiplier as i128;
         let mut penalty_amount = 0i128;
+        let user_stats_key = DataKey::UserStats(user.clone());
+        let mut user_stats: UserStats = env.storage().instance().get(&user_stats_key).unwrap_or(UserStats {
+            total_volume_saved: 0,
+            on_time_contributions: 0,
+            late_contributions: 0,
+        });
 
-
+        if current_time > circle.deadline_timestamp {
             let base_penalty = (base_amount * circle.late_fee_bps as i128) / 10000;
             // Apply referral discount
             let mut discount = 0i128;
@@ -1061,8 +1084,38 @@ impl SoroSusuTrait for SoroSusu {
         circle.contribution_bitmap = 0;
         circle.is_insurance_used = false;
 
+        // Mint soulbound "Susu Master" badge when the full cycle completes
+        let next_index = circle.current_recipient_index + 1;
+        if next_index >= circle.max_members {
+            let member_key = DataKey::Member(user.clone());
+            if let Some(member_info) = env.storage().instance().get::<DataKey, Member>(&member_key) {
+                let stats_key = DataKey::UserStats(user.clone());
+                let stats: UserStats = env.storage().instance().get(&stats_key).unwrap_or(UserStats {
+                    total_volume_saved: 0,
+                    on_time_contributions: 0,
+                    late_contributions: 0,
+                });
+                let volume_tier: u32 = if stats.total_volume_saved >= 10_000_000_000 { 3 }
+                    else if stats.total_volume_saved >= 1_000_000_000 { 2 }
+                    else { 1 };
+                let metadata = NftBadgeMetadata {
+                    volume_tier,
+                    perfect_attendance: stats.late_contributions == 0,
+                    group_lead_status: member_info.address == circle.creator,
+                };
+                // token_id: circle_id in upper 64 bits, member index in lower 64 bits
+                let token_id: u128 = ((circle_id as u128) << 64) | (member_info.index as u128);
+                let nft_client = SusuNftClient::new(&env, &circle.nft_contract);
+                nft_client.mint_badge(&user, &token_id, &metadata);
+                env.storage().instance().set(&DataKey::CycleBadge(user.clone(), circle_id), &token_id);
+                env.events().publish(
+                    (symbol_short!("BADGE"), symbol_short!("MINT")),
+                    (user.clone(), circle_id, token_id, metadata),
+                );
+            }
+        }
 
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
+        circle.current_recipient_index = next_index;
         env.storage().instance().remove(&DataKey::ScheduledPayoutTime(circle_id));
     }
 
@@ -1082,7 +1135,7 @@ impl SoroSusuTrait for SoroSusu {
             panic!("Insurance already used");
         }
 
-        let member_key = DataKey::Member(member);
+        let member_key = DataKey::Member(member.clone());
         let member_info: Member = env
             .storage()
             .instance()
@@ -1137,8 +1190,6 @@ impl SoroSusuTrait for SoroSusu {
         }
         if new_bps > 10000 {
             panic!("Penalty cannot exceed 100%");
-        }
-
         }
 
         env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
@@ -1272,7 +1323,8 @@ impl SoroSusuTrait for SoroSusu {
             panic!("No active recovery proposal");
         }
 
-
+        let member_key = DataKey::Member(user.clone());
+        let member: Member = env.storage().instance().get(&member_key).expect("Not a member");
 
         circle.recovery_votes_bitmap |= 1u64 << member.index;
         apply_recovery_if_consensus(&env, &user, circle_id, &mut circle);
@@ -1292,7 +1344,12 @@ impl SoroSusuTrait for SoroSusu {
             panic!("Unauthorized");
         }
 
-
+        let member_key = DataKey::Member(member.clone());
+        let mut member_info: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
 
         member_info.status = MemberStatus::Ejected;
         env.storage().instance().set(&member_key, &member_info);
@@ -1332,9 +1389,6 @@ impl SoroSusuTrait for SoroSusu {
         let mut balance: i128 = env.storage().instance().get(&safety_key).unwrap_or(0);
         balance += amount;
         env.storage().instance().set(&safety_key, &balance);
-    }
-
-
     }
 
     #[test]
