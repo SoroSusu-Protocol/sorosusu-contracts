@@ -233,99 +233,7 @@ pub enum DataKey {
     LastCreatedTimestamp(Address),
     SafetyDeposit(Address, u64),
     GroupReserve,
-    LendingPool,
-    CycleBadge(Address, u64),
-    UserStats(Address),
-    ProtocolFeeBps,
-    ProtocolTreasury,
-    CollateralVault(Address, u64),
-    ReputationData(Address),
-    SocialCapital(Address, u64),
-    AuditCount,
-    AuditEntry(u64),
-    AuditAll,
-    AuditByActor(Address),
-    AuditByResource(u64),
-    LeniencyStats(u64),
-    Proposal(u64),
-    DefaultedMembers(u64),
-    RolloverBonus(u64),
-    RolloverVote(u64, Address),
-    LeniencyRequest(u64),
-    VotingPower(Address, u64),
-    DissolutionProposal(u64),
-    RefundClaim(u64),
-    YieldDelegation(u64),
-    YieldVote(u64, Address),
-    YieldPoolRegistry,
-    GroupTreasury(u64),
-    PathPayment(u64),
-    PathPaymentVote(u64, Address),
-    DexRegistry(Address),
-    SupportedTokens(Address),
-    PausedPayout(Address, u64),
-    LeaseFlowContract,
-    LeaseFlowPayoutAuthorization(Address, u64),
-    // Multi-asset basket storage
-    BasketConfig(u64),
-    BasketAssetContrib(u64, Address, Address),
-    GroupInsuranceFund(u64), // Per-circle insurance fund balance
-    InsurancePremium(u64, Address), // Track premiums paid by each member per circle
-    PriceOracle(Address), // Price data for each asset
-    HardAssetBasket, // Reference hard asset basket
-    AssetSwapProposal(u64), // Per-circle asset swap proposals
-    AssetSwapVote(u64, Address), // Votes on asset swap proposals
-    LateFeeDistribution(u64, u32), // Late fee distribution per circle per round
-    LastDepositLedger(Address),
-    LastWithdrawalLedger(Address),
-    RecursiveOptIn(Address, u64),
-    GoldTierCircle,
-    PausedPayout(Address, u64), // (user, circle_id) -> is_paused
-    LeaseFlowContract,
-    GrantStreamContract,
-    MilestoneReached(u64),
-    PaymentTiming(u64, u32, Address), // Payment timing per circle, round, and member
-    PaymentOrderCounter(u64, u32), // Counter to track payment order in each round
-    LiquidityBufferConfig,           // Global liquidity buffer configuration
-    LiquidityBufferReserve,          // Current reserve balance
-    LiquidityAdvance(u64),           // Individual advance records
-    LiquidityAdvanceCounter,         // Counter for generating advance IDs
-    MemberAdvanceHistory(Address, u64), // Member's advance history
-    LiquidityBufferStats,            // Buffer utilization statistics
-    PlatformFeeAllocation,           // Platform fee allocation to buffer
-    // Stellar Anchor Direct Deposit API (SEP-24/SEP-31)
-    AnchorRegistry, // Registry of authorized anchors
-    AnchorDeposit(u64), // Track anchor deposits per circle
-    DepositMemo(u64), // Track deposit memos for compliance
-    // Inter-Susu Lending Market Liquidity Hook
-    LendingMarketProposal(u64),       // Lending market proposals
-    LendingMarketVote(u64, Address),       // Votes on lending market proposals
-    LendingPoolInfo(u64),             // Lending pool information
-    LendingPoolParticipant(u64, Address), // Pool participants
-    LendingMarketConfig,               // Global lending market configuration
-    LendingPosition(u64, Address),        // Individual lending positions
-    LendingOffer(u64),                 // Active lending offers
-    LiquidityProvider(u64, Address),     // Liquidity provider information
-    YieldFarm(u64),                   // Yield farming positions
-    EmergencyLoan(u64),                 // Emergency loan requests
-    RepaymentSchedule(u64),            // Loan repayment schedules
-    LendingMarketStats,               // Lending market statistics
-    // Tranche-Based Payout System
-    TrancheSchedule(u64, Address),    // (circle_id, winner) -> Tranche schedule
-    MemberContributionRecord(u64, u32, Address), // (circle_id, round, member) -> Contribution record
-    DefaultedMember(u64, Address),    // (circle_id, member) -> Default status
-}
 
-// --- TRANCHE-BASED PAYOUT DATA STRUCTURES ---
-
-/// Tranche status for tracking payout phases
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub enum TrancheStatus {
-    Locked,      // Funds are time-locked
-    Unlocked,    // Funds are available for claim
-    Claimed,     // Funds have been claimed
-    ClawedBack,  // Funds clawed back due to default
 }
 
 /// Individual tranche information
@@ -385,6 +293,7 @@ pub struct ReputationData {
     pub social_capital: u32,    // 0-10000 bps (0-100%)
     pub last_updated: u64,
     pub is_active: bool,
+
 }
 
 #[contracttype]
@@ -755,25 +664,7 @@ pub struct DissolvedCircle {
     pub defaulted_members: u32,
 }
 
-#[contracttype]
-#[derive(Clone)]
-pub struct Proposal {
-    pub id: u64,
-    pub circle_id: u64,
-    pub proposer: Address,
-    pub proposal_type: ProposalType,
-    pub title: String,
-    pub description: String,
-    pub created_timestamp: u64,
-    pub voting_start_timestamp: u64,
-    pub voting_end_timestamp: u64,
-    pub status: ProposalStatus,
-    pub for_votes: u64,
-    pub against_votes: u64,
-    pub total_voting_power: u64,
-    pub quorum_met: bool,
-    pub execution_data: String, // JSON or structured data for execution
-}
+
 
 #[contracttype]
 #[derive(Clone)]
@@ -3318,10 +3209,7 @@ impl SoroSusuTrait for SoroSusu {
         let mut circle: CircleInfo = env.storage().instance().get(&circle_key)
             .expect("Circle not found");
 
-        // Apply the bonus to the group reserve (will be used in next cycle's first pot)
-        let mut reserve: i128 = env.storage().instance().get(&DataKey::GroupReserve).unwrap_or(0);
-        reserve += rollover_bonus.bonus_amount;
-        env.storage().instance().set(&DataKey::GroupReserve, &reserve);
+
 
         // Mark as applied and track the cycle
         rollover_bonus.status = RolloverStatus::Applied;
@@ -3671,7 +3559,7 @@ impl SoroSusuTrait for SoroSusu {
             (recipient_share, treasury_share, new_yield),
         );
 
-        write_audit(&env, &env.current_contract_address(), AuditAction::AdminAction, circle_id);
+
     }
 
     fn propose_path_payment_support(env: Env, user: Address, circle_id: u64) {
@@ -4283,14 +4171,7 @@ impl SoroSusuTrait for SoroSusu {
                 user.clone(),
                 asset_weight.token.clone(),
             );
-            let prev_amount: i128 = env
-                .storage()
-                .instance()
-                .get(&contrib_key)
-                .unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&contrib_key, &(prev_amount + asset_amount));
+
         }
 
         // Update user statistics
@@ -4537,11 +4418,6 @@ impl SoroSusuTrait for SoroSusu {
         client.transfer(&lead, &env.current_contract_address(), &bond_amount);
     }
 
-    fn create_slashing_proposal(env: Env, circle_id: u64, target_lead: Address, reason: String, proposer: Address) -> u64 {
-        proposer.require_auth();
-        
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))
-            .unwrap_or_else(|| panic!("Circle does not exist"));
 
         let member_key = DataKey::Member(proposer.clone());
         let _member: Member = env.storage().instance().get(&member_key)
@@ -4656,6 +4532,161 @@ impl SoroSusuTrait for SoroSusu {
 
         proposal.is_executed = true;
         env.storage().instance().set(&DataKey::SlashingProposal(proposal_id), &proposal);
+    }
+
+    // --- SBT HELPER FUNCTIONS ---
+
+    fn calculate_user_reputation_score(env: Env, user: Address) -> u32 {
+        let member_key = DataKey::Member(user.clone());
+        let member: Member = env.storage().instance().get(&member_key)
+            .unwrap_or_else(|| Member {
+                address: user,
+                index: 0,
+                contribution_count: 0,
+                last_contribution_time: 0,
+                is_active: false,
+            });
+
+        if !member.is_active {
+            return 0;
+        }
+
+        // Base score from contribution count (max 50 points)
+        let contribution_score = (member.contribution_count.min(50) as u32) * 1;
+
+        // Bonus for timely payments (max 30 points)
+        let timely_bonus = Self::calculate_timely_payment_bonus(env.clone(), user.clone());
+
+        // Bonus for active participation (max 20 points)
+        let participation_bonus = Self::calculate_participation_bonus(env.clone(), user.clone());
+
+        let total_score = contribution_score + timely_bonus + participation_bonus;
+        total_score.min(100) // Cap at 100
+    }
+
+    fn calculate_timely_payment_bonus(env: Env, user: Address) -> u32 {
+        // Check if user has any late fees in their history
+        // This is a simplified implementation - in practice you'd track payment history
+        let member_key = DataKey::Member(user);
+        if let Ok(member) = env.storage().instance().get::<DataKey, Member>(&member_key) {
+            if member.contribution_count > 0 {
+                // Assume most payments are timely for this example
+                return 25;
+            }
+        }
+        0
+    }
+
+    fn calculate_participation_bonus(env: Env, user: Address) -> u32 {
+        // Bonus for being active in multiple circles or long-term participation
+        let member_key = DataKey::Member(user);
+        if let Ok(member) = env.storage().instance().get::<DataKey, Member>(&member_key) {
+            if member.contribution_count >= 10 {
+                return 20;
+            } else if member.contribution_count >= 5 {
+                return 10;
+            } else if member.contribution_count >= 2 {
+                return 5;
+            }
+        }
+        0
+    }
+
+    fn get_user_total_cycles_completed(env: Env, user: Address) -> u32 {
+        let member_key = DataKey::Member(user);
+        if let Ok(member) = env.storage().instance().get::<DataKey, Member>(&member_key) {
+            return member.contribution_count;
+        }
+        0
+    }
+
+    fn check_and_issue_sbt_credential(env: Env, user: Address) {
+        // Check if SBT contract is set
+        let sbt_contract: Option<Address> = env.storage().instance().get(&DataKey::SbtContract);
+        if sbt_contract.is_none() {
+            return; // SBT system not initialized
+        }
+
+        // Check if user already has an SBT
+        let user_sbt_key = DataKey::UserSbt(user.clone());
+        if env.storage().instance().has(&user_sbt_key) {
+            return; // User already has SBT
+        }
+
+        // Calculate user's reputation score and cycles
+        let reputation_score = Self::calculate_user_reputation_score(env.clone(), user.clone());
+        let total_cycles = Self::get_user_total_cycles_completed(env.clone(), user.clone());
+
+        // Check for milestone 1 (5 cycles, 80 reputation)
+        if total_cycles >= 5 && reputation_score >= 80 {
+            let milestone_id = 1u32;
+            if let Ok(milestone) = env.storage().instance().get::<DataKey, ReputationMilestone>(&DataKey::ReputationMilestone(milestone_id)) {
+                if milestone.is_active {
+                    // Auto-issue SBT credential
+                    let token_id = (milestone_id as u128) << 96 | (env.ledger().timestamp() as u128);
+                    
+                    let sbt = SoulboundToken {
+                        token_id,
+                        owner: user.clone(),
+                        milestone_id,
+                        issued_at: env.ledger().timestamp(),
+                        status: SbtStatus::Active,
+                        reputation_score,
+                        cycles_completed: total_cycles,
+                        metadata: milestone.name,
+                    };
+
+                    // Store SBT
+                    env.storage().instance().set(&user_sbt_key, &sbt);
+
+                    // Mint SBT on external contract
+                    let sbt_client = SbtTokenClient::new(&env, &sbt_contract.unwrap());
+                    sbt_client.mint_sbt(&user, &token_id, &milestone.name);
+
+                    // Emit event
+                    env.events().publish(
+                        (Symbol::short("sbt_auto_issued"), user, milestone_id),
+                        token_id,
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_sbt_clawback_impact(env: Env, circle_id: u64) {
+        // Get all members of the circle and check if any have SBTs
+        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))
+            .unwrap_or_else(|| panic!("Circle not found"));
+
+        let sbt_contract: Option<Address> = env.storage().instance().get(&DataKey::SbtContract);
+        if sbt_contract.is_none() {
+            return; // SBT system not initialized
+        }
+
+        // Check each member for SBT and potentially mark as dishonored
+        for i in 0..circle.member_count {
+            let member_by_index_key = DataKey::MemberByIndex(circle_id, i as u32);
+            if let Ok(member_address) = env.storage().instance().get::<DataKey, Address>(&member_by_index_key) {
+                let user_sbt_key = DataKey::UserSbt(member_address.clone());
+                if let Ok(mut sbt) = env.storage().instance().get::<DataKey, SoulboundToken>(&user_sbt_key) {
+                    // Mark SBT as dishonored due to clawback involvement
+                    if sbt.status == SbtStatus::Active {
+                        sbt.status = SbtStatus::Dishonored;
+                        env.storage().instance().set(&user_sbt_key, &sbt);
+
+                        // Update metadata on external contract
+                        let sbt_client = SbtTokenClient::new(&env, &sbt_contract.unwrap());
+                        sbt_client.update_metadata(&sbt.token_id, &Symbol::short("Dishonored"));
+
+                        // Emit event
+                        env.events().publish(
+                            (Symbol::short("sbt_dishonored"), member_address, circle_id),
+                            sbt.token_id,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
