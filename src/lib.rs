@@ -44,6 +44,96 @@ pub struct Member {
     pub consecutive_missed_rounds: u32,
 }
 
+// Recursive Default Recovery structures
+#[contracttype]
+#[derive(Clone)]
+pub struct DefaultRecoveryConfig {
+    pub enabled: bool,                    // Whether recovery sprint is enabled
+    pub sprint_duration: u64,             // Duration of recovery sprint (e.g., 2 rounds)
+    def priority_claim_bps: u32,        // Percentage of defaulter's share for priority claims
+    pub healthy_member_bps: u32,          // Percentage of defaulter's share for healthy members
+    pub max_sprint_participants: u16,       // Maximum participants in recovery sprint
+    pub min_participant_score: u32,         // Minimum reputation score to participate
+    pub collateral_release_bps: u32,          // Percentage of collateral to release per round
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoverySprint {
+    pub sprint_id: u64,
+    pub circle_id: u64,
+    pub defaulter: Address,              // Member who defaulted
+    pub total_defaulter_share: i128,       // Total amount owed by defaulter
+    pub available_share: i128,             // Amount available for distribution
+    pub priority_claim_amount: i128,         // Amount claimed by priority claimants
+    pub healthy_claim_amount: i128,           // Amount claimed by healthy members
+    pub collateral_released: i128,            // Total collateral released this sprint
+    pub start_round: u32,                  // Round when sprint started
+    pub end_round: u32,                    // Round when sprint ended
+    pub participants: Vec<Address>,            // Members participating in recovery
+    pub status: RecoverySprintStatus,         // Current status of sprint
+    pub created_timestamp: u64,              // When sprint was created
+    pub completion_timestamp: Option<u64>,     // When sprint was completed
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoverySprintStatus {
+    Active,         // Sprint is currently active
+    Completed,      // Sprint completed successfully
+    Failed,          // Sprint failed due to insufficient participants
+    Cancelled,       // Sprint was cancelled
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PriorityClaim {
+    pub claim_id: u64,
+    pub sprint_id: u64,
+    pub claimant: Address,              // Member making priority claim
+    pub claim_amount: i128,             // Amount claimed (includes bonus)
+    pub original_defaulter_share: i128,   // Original share of defaulter's obligation
+    pub bonus_percentage_bps: u32,       // Bonus for priority claim (e.g., 1000 = 10%)
+    pub claim_timestamp: u64,            // When claim was made
+    pub is_processed: bool,              // Whether claim has been processed
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct HealthyMemberClaim {
+    pub claim_id: u64,
+    pub sprint_id: u64,
+    pub claimant: Address,              // Healthy member making claim
+    pub claim_amount: i128,             // Amount claimed
+    pub reputation_score: u32,            // Member's reputation score
+    pub claim_timestamp: u64,            // When claim was made
+    pub is_processed: bool,              // Whether claim has been processed
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct InternalDebtRestructuring {
+    pub restructuring_id: u64,
+    pub circle_id: u64,
+    pub original_principal: i128,         // Original defaulted amount
+    pub restructured_amount: i128,        // New restructured obligation
+    pub interest_rate_bps: u32,            // Interest rate in basis points
+    pub repayment_schedule: Vec<(u64, i128)>, // (round_number, payment_amount)
+    pub start_round: u32,                // When restructuring begins
+    pub end_round: u32,                  // When restructuring ends
+    pub status: DebtRestructuringStatus,    // Current status
+    pub created_timestamp: u64,              // When restructuring was created
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DebtRestructuringStatus {
+    Active,         // Restructuring is active
+    Completed,      // Successfully completed
+    Defaulted,      // Failed to complete payments
+    Cancelled,       // Cancelled by admin
+}
+
 #[derive(Clone)]
 pub struct GasBufferConfig {
     pub min_buffer_amount: i128,     // Minimum XLM to maintain as buffer
@@ -179,14 +269,24 @@ pub trait SoroSusuTrait {
     fn verify_anchor_deposit(env: Env, deposit_id: u64) -> bool;
     fn get_anchor_info(env: Env, anchor_address: Address) -> AnchorInfo;
     fn get_deposit_record(env: Env, deposit_id: u64) -> AnchorDeposit;
-}
 
-// --- ERROR CODES ---
+    // NEW: Recursive Default Recovery functions
+    fn configure_default_recovery(env: Env, creator: Address, circle_id: u64, config: DefaultRecoveryConfig);
+    fn initiate_recovery_sprint(env: Env, admin: Address, circle_id: u64, defaulter: Address);
+    fn make_priority_claim(env: Env, claimant: Address, circle_id: u64, sprint_id: u64);
+    fn make_healthy_member_claim(env: Env, claimant: Address, circle_id: u64, sprint_id: u64);
+    fn get_recovery_sprint(env: Env, circle_id: u64, sprint_id: u64) -> Option<RecoverySprint>;
+    fn get_priority_claim(env: Env, claim_id: u64) -> Option<PriorityClaim>;
+    fn get_healthy_member_claim(env: Env, claim_id: u64) -> Option<HealthyMemberClaim>;
+    fn complete_recovery_sprint(env: Env, admin: Address, circle_id: u64, sprint_id: u64);
+    fn cancel_recovery_sprint(env: Env, admin: Address, circle_id: u64, sprint_id: u64);
+    fn initiate_debt_restructuring(env: Env, admin: Address, circle_id: u64, defaulter: Address, principal: i128, interest_rate_bps: u32);
+    fn get_debt_restructuring(env: Env, circle_id: u64, restructuring_id: u64) -> Option<InternalDebtRestructuring>;
+    fn make_restructuring_payment(env: Env, defaulter: Address, circle_id: u64, restructuring_id: u64, amount: i128);
+    fn complete_debt_restructuring(env: Env, admin: Address, circle_id: u64, restructuring_id: u64);
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
+    // Helper functions
+    // ... (rest of the code remains the same)
     Unauthorized = 1,
     MemberNotFound = 2,
     CircleFull = 3,
@@ -372,6 +472,16 @@ pub enum DataKey {
     EmergencyLoan(u64),                 // Emergency loan requests
     RepaymentSchedule(u64),            // Loan repayment schedules
     LendingMarketStats,               // Lending market statistics
+    // Recursive Default Recovery storage
+    DefaultRecoveryConfig(u64),         // Per-circle recovery configuration
+    RecoverySprint(u64),              // Active recovery sprint
+    PriorityClaim(u64),               // Priority claim records
+    HealthyMemberClaim(u64),           // Healthy member claim records
+    InternalDebtRestructuring(u64),     // Debt restructuring records
+    RecoverySprintCounter,              // Counter for generating sprint IDs
+    PriorityClaimCounter,               // Counter for generating priority claim IDs
+    HealthyMemberClaimCounter,           // Counter for generating healthy claim IDs
+    DebtRestructuringCounter,           // Counter for generating restructuring IDs
 }
 
 #[contracttype]
