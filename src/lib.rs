@@ -29,6 +29,9 @@ pub struct CircleInfo {
     pub current_pot_recipient: Option<Address>,
     pub gas_buffer_balance: i128, // XLM buffer for gas fees
     pub gas_buffer_enabled: bool,
+    // Multi-winner batch payout configuration
+    pub winners_per_round: u16, // Number of winners per round (1, 2, 5, or 10)
+    pub batch_payout_enabled: bool, // Whether batch payout is enabled
 }
 
 #[derive(Clone)]
@@ -47,6 +50,32 @@ pub struct GasBufferConfig {
     pub max_buffer_amount: i128,     // Maximum XLM that can be buffered
     pub auto_refill_threshold: i128, // When to auto-refill the buffer
     pub emergency_buffer: i128,      // Emergency buffer for extreme network conditions
+}
+
+// Multi-winner batch payout structures
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchPayoutRecord {
+    pub circle_id: u64,
+    pub round_number: u32,
+    pub total_winners: u16,
+    pub total_pot: i128,
+    pub organizer_fee: i128,
+    pub net_payout_per_winner: i128,
+    pub dust_amount: i128, // Rounding dust that couldn't be evenly distributed
+    pub payout_timestamp: u64,
+    pub winners: Vec<Address>, // List of winner addresses for this round
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct IndividualPayoutClaim {
+    pub recipient: Address,
+    pub circle_id: u64,
+    pub round_number: u32,
+    pub amount_claimed: i128,
+    pub claim_timestamp: u64,
+    pub batch_payout_id: u64, // Reference to the batch payout record
 }
 
 // --- STORAGE KEYS ---
@@ -72,6 +101,11 @@ pub enum DataKey {
     AnchorRegistry, // Registry of authorized anchors
     AnchorDeposit(u64), // Track anchor deposits per circle
     DepositMemo(u64), // Track deposit memos for compliance
+    // Multi-winner batch payout tracking
+    BatchPayoutRecord(u64, u32), // (circle_id, round_number) -> batch payout record
+    IndividualPayoutClaim(Address, u64, u32), // (recipient, circle_id, round_number) -> individual claim
+    BatchPayoutCounter, // Counter for generating batch payout IDs
+    DustReserve(u64), // Per-circle dust reserve for rounding errors
 }
 
 // --- CONTRACT TRAIT ---
@@ -109,6 +143,12 @@ pub trait SoroSusuTrait {
     fn distribute_payout(env: Env, caller: Address, circle_id: u64);
     fn trigger_payout(env: Env, admin: Address, circle_id: u64);
     fn finalize_round(env: Env, creator: Address, circle_id: u64);
+
+    // NEW: Multi-winner batch payout functions
+    fn configure_batch_payout(env: Env, creator: Address, circle_id: u64, winners_per_round: u16);
+    fn distribute_batch_payout(env: Env, caller: Address, circle_id: u64);
+    fn get_batch_payout_record(env: Env, circle_id: u64, round_number: u32) -> Option<BatchPayoutRecord>;
+    fn get_individual_payout_claim(env: Env, recipient: Address, circle_id: u64, round_number: u32) -> Option<IndividualPayoutClaim>;
 
     // Helper functions
     fn get_circle(env: Env, circle_id: u64) -> CircleInfo;
@@ -160,9 +200,21 @@ pub enum Error {
     InvalidDepositMemo = 20,
     DepositAlreadyProcessed = 21,
     ComplianceCheckFailed = 22,
+    // Batch payout specific errors
+    InvalidWinnersPerRound = 23,
+    BatchPayoutNotEnabled = 24,
+    InsufficientWinners = 25,
+    BatchPayoutAlreadyProcessed = 26,
+    DustCalculationError = 27,
 }
 
 // --- CONSTANTS ---
+// Batch payout configuration
+const MIN_WINNERS_PER_ROUND: u16 = 1;
+const MAX_WINNERS_PER_ROUND: u16 = 10;
+const VALID_WINNER_COUNTS: [u16; 4] = [1, 2, 5, 10]; // Allowed winner counts
+const STROOP_PRECISION: i128 = 10_000_000; // 7 decimal places for Stellar
+
 const REFERRAL_DISCOUNT_BPS: u32 = 500; // 5%
 const RATE_LIMIT_SECONDS: u64 = 300; // 5 minutes
 const LENIENCY_GRACE_PERIOD: u64 = 172800; // 48 hours in seconds
@@ -1017,6 +1069,8 @@ pub struct PlatformFeeAllocation {
     pub treasury_allocation_amount: i128,
     pub last_allocation_timestamp: u64,
     pub allocation_frequency: u64,         // How often fees are allocated
+}
+
 /// Stellar Anchor Information - SEP-24/SEP-31 compliant anchor registry
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -2496,16 +2550,17 @@ impl SoroSusuTrait for SoroSusu {
             );
         }
 
-        // Deduct gas cost from buffer (in a real implementation, this would be the actual gas used)
+        // Deduct gas cost from buffer
         let mut updated_circle = circle.clone();
         updated_circle.gas_buffer_balance -= estimated_gas_cost;
-        env.storage::instance().set(&DataKey::Circle(circle_id), &updated_circle);
+        env.storage::instance().set(&DataKey::Circle(circle.id), &updated_circle);
 
         Ok(())
     }
 
     fn check_and_finalize_round(env: &Env, circle_id: u64) {
         if Self::all_members_contributed(env, circle_id) {
+            // ... (rest of the code remains the same)
             let circle: CircleInfo = env.storage::instance()
                 .get(&DataKey::Circle(circle_id))
                 .unwrap_or_else(|| panic!("Circle not found"));
