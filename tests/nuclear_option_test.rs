@@ -1,3 +1,4 @@
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, String, Symbol};
 use sorosusu_contracts::{SoroSusu, SoroSusuTrait, DataKey, DissolutionVoteChoice, DissolutionStatus, RefundStatus};
 
@@ -14,21 +15,13 @@ fn test_initiate_dissolution() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0, // 100 XLM
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, // 100 XLM, &5u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&initiator, &circle_id, &1u32, &None);
+    client.join_circle(&initiator, &circle_id);
     
     // Initiate dissolution
     let reason = String::from_str(&env, "Global crisis - need emergency exit");
@@ -63,22 +56,14 @@ fn test_dissolution_double_initiation_prevention() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&initiator1, &circle_id, &1u32, &None);
-    client.join_circle(&initiator2, &circle_id, &1u32, &None);
+    client.join_circle(&initiator1, &circle_id);
+    client.join_circle(&initiator2, &circle_id);
     
     // First initiation
     let reason = String::from_str(&env, "First dissolution attempt");
@@ -86,11 +71,8 @@ fn test_dissolution_double_initiation_prevention() {
     
     // Try second initiation - should fail
     let reason2 = String::from_str(&env, "Second dissolution attempt");
-    let result = env.try_invoke_contract::<_, ()>(
-        &contract_id,
-        &Symbol::new(&env, "initiate_dissolution"),
-        (initiator2, circle_id, reason2),
-    );
+    let result = env.try_invoke_contract::<_, ()>( &contract_id, &Symbol::new(&env, "initiate_dissolution"),
+        (initiator2, circle_id, reason2));
     assert!(result.is_err());
 }
 
@@ -111,25 +93,17 @@ fn test_vote_to_dissolve_supermajority() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&initiator, &circle_id, &1u32, &None);
-    client.join_circle(&voter1, &circle_id, &1u32, &None);
-    client.join_circle(&voter2, &circle_id, &1u32, &None);
-    client.join_circle(&voter3, &circle_id, &1u32, &None);
-    client.join_circle(&voter4, &circle_id, &1u32, &None);
+    client.join_circle(&initiator, &circle_id);
+    client.join_circle(&voter1, &circle_id);
+    client.join_circle(&voter2, &circle_id);
+    client.join_circle(&voter3, &circle_id);
+    client.join_circle(&voter4, &circle_id);
     
     // Initiate dissolution
     let reason = String::from_str(&env, "Need emergency exit");
@@ -171,25 +145,17 @@ fn test_vote_to_dissolve_insufficient_majority() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&initiator, &circle_id, &1u32, &None);
-    client.join_circle(&voter1, &circle_id, &1u32, &None);
-    client.join_circle(&voter2, &circle_id, &1u32, &None);
-    client.join_circle(&voter3, &circle_id, &1u32, &None);
-    client.join_circle(&voter4, &circle_id, &1u32, &None);
+    client.join_circle(&initiator, &circle_id);
+    client.join_circle(&voter1, &circle_id);
+    client.join_circle(&voter2, &circle_id);
+    client.join_circle(&voter3, &circle_id);
+    client.join_circle(&voter4, &circle_id);
     
     // Initiate dissolution
     let reason = String::from_str(&env, "Need emergency exit");
@@ -230,22 +196,14 @@ fn test_double_voting_prevention() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&initiator, &circle_id, &1u32, &None);
-    client.join_circle(&voter, &circle_id, &1u32, &None);
+    client.join_circle(&initiator, &circle_id);
+    client.join_circle(&voter, &circle_id);
     
     // Initiate dissolution
     let reason = String::from_str(&env, "Need emergency exit");
@@ -255,11 +213,8 @@ fn test_double_voting_prevention() {
     client.vote_to_dissolve(&voter, &circle_id, &DissolutionVoteChoice::Approve);
     
     // Try to vote again - should fail
-    let result = env.try_invoke_contract::<_, ()>(
-        &contract_id,
-        &Symbol::new(&env, "vote_to_dissolve"),
-        (voter, circle_id, DissolutionVoteChoice::Reject),
-    );
+    let result = env.try_invoke_contract::<_, ()>( &contract_id, &Symbol::new(&env, "vote_to_dissolve"),
+        (voter, circle_id, DissolutionVoteChoice::Reject));
     assert!(result.is_err());
 }
 
@@ -278,23 +233,15 @@ fn test_net_position_calculation() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &3u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &3u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&member1, &circle_id, &1u32, &None);
-    client.join_circle(&member2, &circle_id, &1u32, &None);
-    client.join_circle(&member3, &circle_id, &1u32, &None);
+    client.join_circle(&member1, &circle_id);
+    client.join_circle(&member2, &circle_id);
+    client.join_circle(&member3, &circle_id);
     
     // Simulate some contributions (in real implementation, this would be done through deposits)
     // For this test, we'll directly trigger dissolution to test net position calculation
@@ -327,22 +274,14 @@ fn test_refund_claim_for_unreimbursed_member() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &2u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &2u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&recipient, &circle_id, &1u32, &None);
-    client.join_circle(&unreimbursed, &circle_id, &1u32, &None);
+    client.join_circle(&recipient, &circle_id);
+    client.join_circle(&unreimbursed, &circle_id);
     
     // Initiate dissolution with supermajority
     let reason = String::from_str(&env, "Test dissolution");
@@ -380,32 +319,21 @@ fn test_cannot_refund_pot_recipient() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &2u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &2u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&recipient, &circle_id, &1u32, &None);
+    client.join_circle(&recipient, &circle_id);
     
     // Initiate dissolution
     let reason = String::from_str(&env, "Test dissolution");
     client.initiate_dissolve(&recipient, &circle_id, reason);
     
     // Try to claim refund as recipient - should fail
-    let result = env.try_invoke_contract::<_, ()>(
-        &contract_id,
-        &Symbol::new(&env, "claim_refund"),
-        (recipient, circle_id),
-    );
+    let result = env.try_invoke_contract::<_, ()>( &contract_id, &Symbol::new(&env, "claim_refund"),
+        (recipient, circle_id));
     assert!(result.is_err());
 }
 
@@ -423,22 +351,14 @@ fn test_dissolution_voting_period_expiration() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&initiator, &circle_id, &1u32, &None);
-    client.join_circle(&voter, &circle_id, &1u32, &None);
+    client.join_circle(&initiator, &circle_id);
+    client.join_circle(&voter, &circle_id);
     
     // Initiate dissolution
     let reason = String::from_str(&env, "Test dissolution");
@@ -448,11 +368,8 @@ fn test_dissolution_voting_period_expiration() {
     env.ledger().set_timestamp(env.ledger().timestamp() + 13000000); // 15+ days later
     
     // Try to vote - should fail
-    let result = env.try_invoke_contract::<_, ()>(
-        &contract_id,
-        &Symbol::new(&env, "vote_to_dissolve"),
-        (voter, circle_id, DissolutionVoteChoice::Approve),
-    );
+    let result = env.try_invoke_contract::<_, ()>( &contract_id, &Symbol::new(&env, "vote_to_dissolve"),
+        (voter, circle_id, DissolutionVoteChoice::Approve));
     assert!(result.is_err());
 }
 
@@ -471,23 +388,15 @@ fn test_dissolved_circle_statistics() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &3u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &3u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&member1, &circle_id, &1u32, &None);
-    client.join_circle(&member2, &circle_id, &1u32, &None);
-    client.join_circle(&member3, &circle_id, &1u32, &None);
+    client.join_circle(&member1, &circle_id);
+    client.join_circle(&member2, &circle_id);
+    client.join_circle(&member3, &circle_id);
     
     // Initiate dissolution with supermajority
     let reason = String::from_str(&env, "Test dissolution");
@@ -519,21 +428,13 @@ fn test_refund_period_expiration() {
     let nft_contract = Address::generate(&env);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &2u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &2u32, &token, &86400u64, &100u64);
     
     // Join circle
-    client.join_circle(&member, &circle_id, &1u32, &None);
+    client.join_circle(&member, &circle_id);
     
     // Initiate dissolution and approve
     let reason = String::from_str(&env, "Test dissolution");
@@ -544,10 +445,33 @@ fn test_refund_period_expiration() {
     env.ledger().set_timestamp(env.ledger().timestamp() + 2700000); // 31+ days later
     
     // Try to claim refund - should fail due to expired period
-    let result = env.try_invoke_contract::<_, ()>(
-        &contract_id,
-        &Symbol::new(&env, "claim_refund"),
-        (member, circle_id),
-    );
+    let result = env.try_invoke_contract::<_, ()>( &contract_id, &Symbol::new(&env, "claim_refund"),
+        (member, circle_id));
     assert!(result.is_err());
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -7,7 +7,7 @@ license = "MIT"
 
 [lib]
 name = "sorosusu_contracts"
-crate-type = ["cdylib", "rlib"] # Essential for WASM compilation and integration tests
+crate-type = ["rlib"] # Essential for WASM compilation and integration tests
 
 [features]
 testutils = []

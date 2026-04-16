@@ -1,12 +1,13 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, token, Vec, i128, u64, u32, u16};
-use sorosusu::{SoroSusuClient, SoroSusuTrait, CircleInfo, Member, DefaultRecoveryConfig, RecoverySprint, PriorityClaim, HealthyMemberClaim, InternalDebtRestructuring, Error};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, token, Vec, u32};
+use sorosusu_contracts::{SoroSusuClient, SoroSusuTrait, CircleInfo, Member, DefaultRecoveryConfig, RecoverySprint, PriorityClaim, HealthyMemberClaim, InternalDebtRestructuring, Error};
 
 #[contract]
 pub struct MockToken;
 
 #[contractimpl]
 impl MockToken {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn init_mock(env: Env, admin: Address) {
         // Mock token initialization
     }
 
@@ -44,19 +45,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000, // 100 USDC contribution
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, // 100 USDC contribution, &10, &token_contract, &86400, &100);
         
         // Configure basic recovery sprint
         let config = DefaultRecoveryConfig {
@@ -92,19 +83,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Test invalid priority claim percentage (over 20%)
         let invalid_config = DefaultRecoveryConfig {
@@ -119,7 +100,7 @@ pub mod tests {
         
         // This should panic due to invalid priority claim percentage
         env.mock_all_auths();
-        // client.configure_default_recovery(&admin, &circle_id, &invalid_config); // Should panic
+        client.configure_default_recovery(&admin, &circle_id, &invalid_config // Should panic
     }
 
     #[test]
@@ -137,19 +118,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add members
         for i in 0..5 {
@@ -159,16 +130,7 @@ pub mod tests {
         
         // Configure recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         
         // Initiate recovery sprint
         env.mock_all_auths();
@@ -199,19 +161,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add members
         for i in 0..5 {
@@ -221,16 +173,7 @@ pub mod tests {
         
         // Configure and initiate recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         client.initiate_recovery_sprint(&admin, &circle_id, &defaulter);
         
         // Make priority claim
@@ -261,19 +204,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add members
         for i in 0..5 {
@@ -283,16 +216,7 @@ pub mod tests {
         
         // Configure and initiate recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         client.initiate_recovery_sprint(&admin, &circle_id, &defaulter);
         
         // Make healthy member claim
@@ -324,19 +248,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add members
         for i in 0..5 {
@@ -346,16 +260,7 @@ pub mod tests {
         
         // Configure and initiate recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         client.initiate_recovery_sprint(&admin, &circle_id, &defaulter);
         
         // Make claims
@@ -390,19 +295,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add member and create default scenario
         let member = Address::generate(&env);
@@ -415,16 +310,7 @@ pub mod tests {
         
         // Configure recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         
         // Initiate recovery sprint
         env.mock_all_auths();
@@ -456,19 +342,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add member
         let member = Address::generate(&env);
@@ -476,16 +352,7 @@ pub mod tests {
         
         // Configure recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         
         // Initiate recovery sprint and debt restructuring
         env.mock_all_auths();
@@ -526,19 +393,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add only 2 participants (insufficient for 6 participants)
         let member1 = Address::generate(&env);
@@ -550,20 +407,11 @@ pub mod tests {
         
         // Configure recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         
         // Try to initiate sprint - should fail due to insufficient participants
         env.mock_all_auths();
-        // client.initiate_recovery_sprint(&admin, &circle_id, &defaulter); // Should panic
+        client.initiate_recovery_sprint(&admin, &circle_id, &defaulter // Should panic
     }
 
     #[test]
@@ -580,19 +428,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Configure recovery sprint as disabled
         let config = DefaultRecoveryConfig {
@@ -609,7 +447,7 @@ pub mod tests {
         
         // Try to initiate sprint - should fail because recovery is disabled
         env.mock_all_auths();
-        // client.initiate_recovery_sprint(&admin, &circle_id, &defaulter); // Should panic
+        client.initiate_recovery_sprint(&admin, &circle_id, &defaulter // Should panic
     }
 
     #[test]
@@ -627,19 +465,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add members
         for i in 0..5 {
@@ -649,16 +477,7 @@ pub mod tests {
         
         // Configure and initiate recovery sprint
         let config = DefaultRecoveryConfig {
-            enabled: true,
-            sprint_duration: RECOVERY_SPRINT_DURATION,
-            priority_claim_bps: PRIORITY_CLAIM_BPS,
-            healthy_member_bps: HEALTHY_MEMBER_BPS,
-            max_sprint_participants: MAX_SPRINT_PARTICIPANTS,
-            min_participant_score: MIN_PARTICIPANT_SCORE,
-            collateral_release_bps: COLLATERAL_RELEASE_BPS,
-        };
-        
-        client.configure_default_recovery(&admin, &circle_id, &config);
+            enabled: true);
         client.initiate_recovery_sprint(&admin, &circle_id, &defaulter);
         
         // Make first claim
@@ -667,6 +486,33 @@ pub mod tests {
         
         // Try to make second claim - should fail
         env.mock_all_auths();
-        // client.make_priority_claim(&claimant, &circle_id, &1); // Should panic
+        client.make_priority_claim(&claimant, &circle_id, &1 // Should panic
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

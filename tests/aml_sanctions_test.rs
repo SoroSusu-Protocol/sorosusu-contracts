@@ -1,8 +1,8 @@
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, symbol_short, token, Symbol};
 use soroban_sdk::testutils::{Address as _, Ledger};
-use sorosusu_contracts::{SoroSusu, SoroSusuClient};
 
 #[contract]
 pub struct MockSanctionsOracle;
@@ -54,33 +54,25 @@ fn test_aml_sanctions_payout_gating() {
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     client.set_sanctions_oracle(&admin, &oracle_id);
     
     // Create circle
     let amount = 1000i128;
     let max_members = 2u32;
-    let circle_id = client.create_circle(
-        &creator,
-        &amount,
-        &max_members,
-        &token,
-        &86400,
-        &0,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &amount, &max_members, &token, &86400, &0);
     
     // Mint tokens
-    token_admin_client.mint(&winner, &10000);
+    token_admin_client.mint(&winner);
     token_admin_client.mint(&other_member, &10000);
     
     // Join members
-    client.join_circle(&winner, &circle_id, &1, &None);
-    client.join_circle(&other_member, &circle_id, &1, &None);
+    client.join_circle(&winner, &circle_id);
+    client.join_circle(&other_member, &circle_id);
     
     // Deposit
-    client.deposit(&winner, &circle_id);
-    client.deposit(&other_member, &circle_id);
+    client.deposit(&winner, &circle_id, &1);
+    client.deposit(&other_member, &circle_id, &1);
     
     // Finalize round
     client.finalize_round(&creator, &circle_id);
@@ -89,7 +81,7 @@ fn test_aml_sanctions_payout_gating() {
     env.ledger().set_timestamp(env.ledger().timestamp() + 86401);
     
     // Reveal winner (it should be 'winner' if it's round-robin and they joined first)
-    let revealed_winner = client.reveal_next_winner(&circle_id).unwrap();
+    let revealed_winner = client.reveal_next_winner(&circle_id);
     assert_eq!(revealed_winner, winner);
     
     // CASE 1: Winner is sanctioned
@@ -111,3 +103,31 @@ fn test_aml_sanctions_payout_gating() {
     assert_eq!(cleared_amount, 0);
     assert_eq!(cleared_winner, None);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

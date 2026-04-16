@@ -1,4 +1,3 @@
-#![no_std]
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
     Address, Env, String, Symbol, Vec, Map,
@@ -6,7 +5,7 @@ use soroban_sdk::{
 
 use crate::{
     SoroSusuTrait, Error, DataKey, CircleInfo, Member, UserStats,
-    SusuNftClient, SusuNftTrait, AuditEntry, AuditAction,
+    AuditEntry, AuditAction,
     LiquidityBufferConfig, LiquidityAdvance, LiquidityAdvanceStatus,
     MemberAdvanceHistory, LiquidityBufferStats, PlatformFeeAllocation,
     LIQUIDITY_BUFFER_ADVANCE_PERIOD, LIQUIDITY_BUFFER_MIN_REPUTATION,
@@ -566,6 +565,10 @@ impl PotLiquidityBuffer {
     }
 
     // Get liquidity buffer statistics
+    pub fn get_liquidity_buffer_config(env: Env) -> LiquidityBufferConfig {
+        env.storage().instance().get(&DataKey::LiquidityBufferConfig).expect("Not initialized")
+    }
+
     pub fn get_liquidity_buffer_stats(env: Env) -> LiquidityBufferStats {
         env.storage().instance()
             .get(&DataKey::LiquidityBufferStats)

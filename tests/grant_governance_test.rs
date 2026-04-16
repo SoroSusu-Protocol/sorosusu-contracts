@@ -1,7 +1,8 @@
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::{Address, Env, Vec, Symbol, String};
-use crate::{SoroSusu, SoroSusuClient, GrantSettlement, VotingSnapshot, ImpactCertificateMetadata};
+use sorosusu_contracts::{SoroSusu, SoroSusuClient, GrantSettlement, VotingSnapshot, ImpactCertificateMetadata};
 
 #[contract]
 pub struct MockToken;
@@ -34,7 +35,7 @@ fn setup_test_env() -> (Env, SoroSusuClient<'static>, Address, Address, Address)
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create mock token
     let token_id = env.register_contract(None, MockToken);
@@ -65,16 +66,7 @@ fn test_grant_settlement_calculation() {
     let token_id = env.register_contract(None, MockToken);
     let token_address = Address::from_token(&token_id);
     
-    let settlement = client.terminate_grant_amicably(
-        &admin,
-        &grant_id,
-        &grantee,
-        &total_grant,
-        &grant_duration,
-        &start_timestamp,
-        &treasury,
-        &token_address,
-    );
+    let settlement = client.terminate_grant_amicably( &admin, &grant_id, &grantee, &total_grant, &grant_duration, &start_timestamp, &treasury, &token_address);
     
     // Verify settlement calculation
     assert_eq!(settlement.grant_id, grant_id);
@@ -112,16 +104,7 @@ fn test_grant_settlement_full_duration() {
     let token_id = env.register_contract(None, MockToken);
     let token_address = Address::from_token(&token_id);
     
-    let settlement = client.terminate_grant_amicably(
-        &admin,
-        &grant_id,
-        &grantee,
-        &total_grant,
-        &grant_duration,
-        &start_timestamp,
-        &treasury,
-        &token_address,
-    );
+    let settlement = client.terminate_grant_amicably( &admin, &grant_id, &grantee, &total_grant, &grant_duration, &start_timestamp, &treasury, &token_address);
     
     // Should receive full amount
     assert_eq!(settlement.work_in_progress_pay, total_grant);
@@ -141,16 +124,7 @@ fn test_grant_settlement_zero_elapsed() {
     let token_id = env.register_contract(None, MockToken);
     let token_address = Address::from_token(&token_id);
     
-    let settlement = client.terminate_grant_amicably(
-        &admin,
-        &grant_id,
-        &grantee,
-        &total_grant,
-        &grant_duration,
-        &start_timestamp,
-        &treasury,
-        &token_address,
-    );
+    let settlement = client.terminate_grant_amicably( &admin, &grant_id, &grantee, &total_grant, &grant_duration, &start_timestamp, &treasury, &token_address);
     
     // Should receive nothing, all goes back to treasury
     assert_eq!(settlement.work_in_progress_pay, 0);
@@ -180,11 +154,7 @@ fn test_voting_snapshot_creation() {
     let quorum_required = 150u32;
     
     // Create snapshot
-    let snapshot = _client.create_voting_snapshot_for_audit(
-        &proposal_id,
-        &votes,
-        &quorum_required,
-    );
+    let snapshot = _client.create_voting_snapshot_for_audit( &proposal_id, &votes, &quorum_required);
     
     // Verify snapshot data
     assert_eq!(snapshot.proposal_id, proposal_id);
@@ -212,11 +182,7 @@ fn test_voting_snapshot_quorum_not_met() {
     
     let quorum_required = 100u32;
     
-    let snapshot = _client.create_voting_snapshot_for_audit(
-        &proposal_id,
-        &votes,
-        &quorum_required,
-    );
+    let snapshot = _client.create_voting_snapshot_for_audit( &proposal_id, &votes, &quorum_required);
     
     assert!(!snapshot.quorum_met); // 50 < 100
     assert_eq!(snapshot.result, Symbol::new(&env, "QUORUM_NOT_MET"));
@@ -256,15 +222,10 @@ fn test_impact_certificate_initialization() {
     
     let certificate_id = 1u128;
     let total_phases = 5u32;
-    let metadata_uri = String::from_str(&env, "https://metadata.sorosusu.com/impact/1");
+    let metadata_uri = String::from_str(&env, "https:); //metadata.sorosusu.com/impact/1"
     
     // Initialize certificate
-    client.initialize_impact_certificate(
-        &grantee,
-        &certificate_id,
-        &total_phases,
-        &metadata_uri,
-    );
+    client.initialize_impact_certificate( &grantee, &certificate_id, &total_phases, &metadata_uri);
     
     // Verify initial state via progress bar data
     let progress_data = client.get_progress_bar_data(&certificate_id);
@@ -283,22 +244,13 @@ fn test_milestone_progress_updates() {
     
     let certificate_id = 2u128;
     let total_phases = 3u32;
-    let metadata_uri = String::from_str(&env, "https://metadata.sorosusu.com/impact/2");
+    let metadata_uri = String::from_str(&env, "https:); //metadata.sorosusu.com/impact/2"
     
     // Initialize
-    client.initialize_impact_certificate(
-        &grantee,
-        &certificate_id,
-        &total_phases,
-        &metadata_uri,
-    );
+    client.initialize_impact_certificate( &grantee, &certificate_id, &total_phases, &metadata_uri);
     
     // Update to phase 1
-    let cert1 = client.update_milestone_progress(
-        &admin,
-        &certificate_id,
-        &1, // Phase 1
-        &500, // +5% impact score
+    let cert1 = client.update_milestone_progress( &admin, &certificate_id, &1, // Phase 1, &500, // +5% impact score
     );
     
     assert_eq!(cert1.phases_completed, 1);
@@ -306,11 +258,7 @@ fn test_milestone_progress_updates() {
     assert!(cert1.impact_score > 5000); // Increased from initial 5000
     
     // Update to phase 2
-    let cert2 = client.update_milestone_progress(
-        &admin,
-        &certificate_id,
-        &2, // Phase 2
-        &1000, // +10% impact score
+    let cert2 = client.update_milestone_progress( &admin, &certificate_id, &2, // Phase 2, &1000, // +10% impact score
     );
     
     assert_eq!(cert2.phases_completed, 2);
@@ -325,23 +273,13 @@ fn test_progress_bar_visual_data() {
     let (env, client, admin, _treasury, grantee) = setup_test_env();
     
     let certificate_id = 3u128;
-    let metadata_uri = String::from_str(&env, "https://metadata.sorosusu.com/impact/3");
+    let metadata_uri = String::from_str(&env, "https:); //metadata.sorosusu.com/impact/3"
     
     // Initialize with 4 phases
-    client.initialize_impact_certificate(
-        &grantee,
-        &certificate_id,
-        &4u32,
-        &metadata_uri,
-    );
+    client.initialize_impact_certificate( &grantee, &certificate_id, &4u32, &metadata_uri);
     
     // Update to phase 2 (50% complete)
-    client.update_milestone_progress(
-        &admin,
-        &certificate_id,
-        &2,
-        &1000,
-    );
+    client.update_milestone_progress( &admin, &certificate_id, &2, &1000);
     
     // Get visual progress data
     let progress_data = client.get_progress_bar_data(&certificate_id).unwrap();
@@ -356,15 +294,10 @@ fn test_impact_certificate_completion() {
     let (env, client, admin, _treasury, grantee) = setup_test_env();
     
     let certificate_id = 4u128;
-    let metadata_uri = String::from_str(&env, "https://metadata.sorosusu.com/impact/4");
+    let metadata_uri = String::from_str(&env, "https:); //metadata.sorosusu.com/impact/4"
     
     // Initialize
-    client.initialize_impact_certificate(
-        &grantee,
-        &certificate_id,
-        &3u32,
-        &metadata_uri,
-    );
+    client.initialize_impact_certificate( &grantee, &certificate_id, &3u32, &metadata_uri);
     
     // Complete all phases
     client.update_milestone_progress(&admin, &certificate_id, &1, &500);
@@ -389,19 +322,14 @@ fn test_full_governance_workflow() {
     
     // 1. Initialize impact certificate for grant recipient
     let certificate_id = 100u128;
-    client.initialize_impact_certificate(
-        &grantee,
-        &certificate_id,
-        &5u32,
-        &String::from_str(&env, "https://metadata.sorosusu.com/impact/100"),
-    );
+    client.initialize_impact_certificate( &grantee, &certificate_id, &5u32, &String::from_str(&env, "https://metadata.sorosusu.com/impact/100"));
     
     // 2. Create voting snapshot for grant approval
     let proposal_id = 1u64;
     let mut votes = Vec::new(&env);
     votes.push_back((admin.clone(), 100u32, Symbol::new(&env, "For")));
     
-    let snapshot = client.create_voting_snapshot_for_audit(&proposal_id, &votes, &50u32);
+    let snapshot = client.create_voting_snapshot_for_audit(&proposal_id, &votes, &50u64);
     assert_eq!(snapshot.result, Symbol::new(&env, "APPROVED"));
     
     // 3. Simulate grant progress - update milestone
@@ -421,16 +349,7 @@ fn test_full_governance_workflow() {
     let token_id = env.register_contract(None, MockToken);
     let token_address = Address::from_token(&token_id);
     
-    let settlement = client.terminate_grant_amicably(
-        &admin,
-        &grant_id,
-        &grantee,
-        &total_grant,
-        &grant_duration,
-        &start_timestamp,
-        &treasury,
-        &token_address,
-    );
+    let settlement = client.terminate_grant_amicably( &admin, &grant_id, &grantee, &total_grant, &grant_duration, &start_timestamp, &treasury, &token_address);
     
     // Verify 50% payout (30 days out of 60)
     assert!((settlement.work_in_progress_pay - (total_grant / 2)).abs() < 1000);
@@ -439,3 +358,31 @@ fn test_full_governance_workflow() {
     let final_cert = client.get_progress_bar_data(&certificate_id).unwrap();
     assert!(final_cert.contains_key(&Symbol::new(&env, "progress")));
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

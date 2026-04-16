@@ -1,4 +1,6 @@
-#![cfg(test)]
+use sorosusu_contracts::{SoroSusu, SoroSusuClient};
+#[cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 #[test]
 fn test_rate_limit_enforcement() {
@@ -81,3 +83,32 @@ fn test_rate_limit_constants() {
     
     assert_eq!(RATE_LIMIT_SECONDS, EXPECTED_MINUTES * 60);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

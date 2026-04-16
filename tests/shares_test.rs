@@ -1,4 +1,5 @@
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::contractclient;
 use soroban_sdk::testutils::{Address as TestAddress, Logs};
@@ -27,47 +28,20 @@ fn test_shares_functionality() {
     let nft_client = SusuNftClient::new(&env, &nft_contract_address);
     
     // Initialize
-    susu_client.init(&admin);
+    susu_client.init(&admin, &0);
     
     // Create NFT collection for the susu contract
     nft_client.init(&susu_contract_address, &Symbol::new(&env, "SusuNFT"), &Symbol::new(&env, "SSNFT"));
     
     // Create a circle
-    let circle_id = susu_client.create_circle(
-        &creator,
-        &100i128, // contribution amount
-        &3u32,    // max members
-        &Address::generate(&env), // token
-        &604800,  // cycle duration (1 week)
-        &100u32,  // insurance fee bps
-        &nft_contract_address,
-        &admin,   // arbitrator
-    );
+    let circle_id = susu_client.create_circle(&creator, &100u64, // contribution amount, &3u32, // max members, &Address::generate(&env), // token, &604800); // cycle duration (1 week)
     
     // Join members with different shares
-    susu_client.join_circle(
-        &member1,
-        &circle_id,
-        &1u32, // tier_multiplier (will be set to shares)
-        &1u32, // shares = 1 (standard)
-        &None::<Address>,
-    );
+    susu_client.join_circle(&member1, &circle_id); // shares = 1 (standard)
     
-    susu_client.join_circle(
-        &member2,
-        &circle_id,
-        &2u32, // tier_multiplier (will be set to shares)
-        &2u32, // shares = 2 (double)
-        &None::<Address>,
-    );
+    susu_client.join_circle(&member2, &circle_id); // shares = 2 (double)
     
-    susu_client.join_circle(
-        &member3,
-        &circle_id,
-        &1u32, // tier_multiplier (will be set to shares)
-        &1u32, // shares = 1 (standard)
-        &None::<Address>,
-    );
+    susu_client.join_circle(&member3, &circle_id); // shares = 1 (standard)
     
     // Verify circle state
     let circle_info = susu_client.get_circle(&circle_id);
@@ -93,16 +67,7 @@ fn test_shares_functionality() {
     
     // Test that invalid shares are rejected
     let member4 = Address::generate(&env);
-    let result = env.try_invoke_contract::<_, _>(
-        &susu_contract_address,
-        &SorosusuContractClient::new(&env, &susu_contract_address).join_circle(
-            &member4,
-            &circle_id,
-            &1u32,
-            &3u32, // Invalid shares (must be 1 or 2)
-            &None::<Address>,
-        ),
-    );
+    let result = env.try_invoke_contract::<_, _>( &susu_contract_address, &SorosusuContractClient::new(&env, &susu_contract_address).join_circle(&member4, &circle_id)));
     assert!(result.is_err());
 }
 
@@ -124,24 +89,15 @@ fn test_double_payout_for_two_shares() {
     let nft_client = SusuNftClient::new(&env, &nft_contract_address);
     
     // Initialize
-    susu_client.init(&admin);
+    susu_client.init(&admin, &0);
     nft_client.init(&susu_contract_address, &Symbol::new(&env, "SusuNFT"), &Symbol::new(&env, "SSNFT"));
     
     // Create a circle with 2 members
-    let circle_id = susu_client.create_circle(
-        &creator,
-        &100i128, // contribution amount
-        &2u32,    // max members
-        &Address::generate(&env), // token
-        &604800,  // cycle duration
-        &100u32,  // insurance fee bps
-        &nft_contract_address,
-        &admin,   // arbitrator
-    );
+    let circle_id = susu_client.create_circle(&creator, &100u64, // contribution amount, &2u32, // max members, &Address::generate(&env), // token, &604800, // cycle duration, &100u32);
     
     // Join members
-    susu_client.join_circle(&single_share_member, &circle_id, &1u32, &1u32, &None::<Address>);
-    susu_client.join_circle(&double_share_member, &circle_id, &2u32, &2u32, &None::<Address>);
+    susu_client.join_circle(&single_share_member, &circle_id);
+    susu_client.join_circle(&double_share_member, &circle_id);
     
     // Verify total shares
     let circle_info = susu_client.get_circle(&circle_id);
@@ -158,3 +114,30 @@ fn test_double_payout_for_two_shares() {
     // 4. Claim pots and verify amounts
     // This test structure validates the shares setup logic
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

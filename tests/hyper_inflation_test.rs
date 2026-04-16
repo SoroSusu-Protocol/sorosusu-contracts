@@ -1,4 +1,6 @@
+use sorosusu_contracts::{SoroSusu, SoroSusuClient};
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 #[test]
 fn test_18_decimal_token_extreme_volumes() {
@@ -217,3 +219,32 @@ fn test_detect_overflow_in_unsafe_multiplication() {
         panic!("Overflow");
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

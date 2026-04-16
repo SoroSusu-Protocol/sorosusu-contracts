@@ -1,12 +1,13 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, token, Symbol, Vec, i128, u64, u32, u16};
-use sorosusu::{SoroSusuClient, SoroSusuTrait, CircleInfo, Member, BatchPayoutRecord, IndividualPayoutClaim, Error};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{contract, contractimpl, Address, Env, token, Symbol, Vec, u32};
+use sorosusu_contracts::{SoroSusuClient, SoroSusuTrait, CircleInfo, Member, BatchPayoutRecord, IndividualPayoutClaim, Error};
 
 #[contract]
 pub struct MockToken;
 
 #[contractimpl]
 impl MockToken {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn init_mock(env: Env, admin: Address) {
         // Mock token initialization
     }
 
@@ -25,7 +26,7 @@ pub struct MockNft;
 
 #[contractimpl]
 impl MockNft {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn init_mock_1(env: Env, admin: Address) {
         // Mock NFT initialization
     }
 
@@ -58,19 +59,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000, // 10 tokens contribution
-            &10, // 10 members
-            &token_contract,
-            &86400, // 1 day cycle
-            &100, // 1% insurance
-            &nft_contract,
-            &arbitrator,
-            &50, // 0.5% organizer fee
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, // 10 tokens contribution, &10, // 10 members, &token_contract, &86400, // 1 day cycle, &100);
         
         // Add members
         client.join_circle(&creator, &circle_id);
@@ -78,7 +69,7 @@ pub mod tests {
         client.join_circle(&user2, &circle_id);
         
         // Configure batch payout with 1 winner (should work like regular payout)
-        client.configure_batch_payout(&creator, &circle_id, &1);
+        client.configure_batch_payout(&creator);
         
         let circle = client.get_circle(&circle_id);
         assert_eq!(circle.winners_per_round, 1);
@@ -101,19 +92,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &50,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Add enough members for batch payout
         for i in 0..5 {
@@ -122,7 +103,7 @@ pub mod tests {
         }
         
         // Configure batch payout with 5 winners
-        client.configure_batch_payout(&creator, &circle_id, &5);
+        client.configure_batch_payout(&creator);
         
         let circle = client.get_circle(&circle_id);
         assert_eq!(circle.winners_per_round, 5);
@@ -144,19 +125,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &10,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &50,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &10, &token_contract, &86400, &100);
         
         // Try to configure with invalid winner count
         client.configure_batch_payout(&creator, &circle_id, &3); // Should panic
@@ -180,20 +151,10 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
         let contribution_amount = 100_000_000; // 10 tokens
-        let circle_id = client.create_circle(
-            &creator,
-            &contribution_amount,
-            &4, // 4 members for precise math testing
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &0, // 0% organizer fee for precise math
-        );
+        let circle_id = client.create_circle(&creator, &contribution_amount, &4, // 4 members for precise math testing, &token_contract, &86400, &100);
         
         // Add all members
         client.join_circle(&creator, &circle_id);
@@ -205,10 +166,10 @@ pub mod tests {
         client.configure_batch_payout(&creator, &circle_id, &2);
         
         // All members contribute
-        client.deposit(&creator, &circle_id);
-        client.deposit(&user1, &circle_id);
-        client.deposit(&user2, &circle_id);
-        client.deposit(&user3, &circle_id);
+        client.deposit(&creator, &circle_id, &1);
+        client.deposit(&user1, &circle_id, &1);
+        client.deposit(&user2, &circle_id, &1);
+        client.deposit(&user3, &circle_id, &1);
         
         // Finalize round
         client.finalize_round(&creator, &circle_id);
@@ -253,20 +214,10 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
         let contribution_amount = 101_000_000; // 10.1 tokens to create dust
-        let circle_id = client.create_circle(
-            &creator,
-            &contribution_amount,
-            &10, // 10 members
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &0, // 0% organizer fee
-        );
+        let circle_id = client.create_circle(&creator, &contribution_amount, &10, // 10 members, &token_contract, &86400, &100);
         
         // Add 10 members
         client.join_circle(&creator, &circle_id);
@@ -280,9 +231,9 @@ pub mod tests {
         client.configure_batch_payout(&creator, &circle_id, &5);
         
         // All members contribute
-        client.deposit(&creator, &circle_id);
-        for user in users.iter() {
-            client.deposit(&user, &circle_id);
+        client.deposit(&creator, &circle_id, &1);
+        for user in users.iter( &1) {
+            client.deposit(&user, &circle_id, &1);
         }
         
         // Finalize round
@@ -326,20 +277,10 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
         let contribution_amount = 50_000_000; // 5 tokens
-        let circle_id = client.create_circle(
-            &creator,
-            &contribution_amount,
-            &15, // 15 members
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &100, // 1% organizer fee
-        );
+        let circle_id = client.create_circle(&creator, &contribution_amount, &15, // 15 members, &token_contract, &86400, &100);
         
         // Add 15 members
         client.join_circle(&creator, &circle_id);
@@ -353,9 +294,9 @@ pub mod tests {
         client.configure_batch_payout(&creator, &circle_id, &10);
         
         // All members contribute
-        client.deposit(&creator, &circle_id);
-        for user in users.iter() {
-            client.deposit(&user, &circle_id);
+        client.deposit(&creator, &circle_id, &1);
+        for user in users.iter( &1) {
+            client.deposit(&user, &circle_id, &1);
         }
         
         // Finalize round
@@ -403,19 +344,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &6, // 6 members for easier rotation tracking
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &0,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &6, // 6 members for easier rotation tracking, &token_contract, &86400, &100);
         
         // Add 6 members in specific order
         client.join_circle(&creator, &circle_id);
@@ -431,21 +362,21 @@ pub mod tests {
         // Test rotation across multiple rounds
         for round in 0..3 {
             // All members contribute
-            client.deposit(&creator, &circle_id);
-            for user in users.iter() {
-                client.deposit(&user, &circle_id);
+            client.deposit(&creator, &circle_id, &1);
+            for user in users.iter( &1) {
+                client.deposit(&user, &circle_id, &1);
             }
             
             client.finalize_round(&creator, &circle_id);
             client.distribute_batch_payout(&creator, &circle_id);
             
             let batch_record = client.get_batch_payout_record(&circle_id, &round).unwrap();
-            let winners = &batch_record.winners;
+            let winners =, &batch_record.winners;
             
             // Verify fair rotation: winners should be different each round
             if round > 0 {
                 let prev_record = client.get_batch_payout_record(&circle_id, &(round - 1)).unwrap();
-                let prev_winners = &prev_record.winners;
+                let prev_winners =, &prev_record.winners;
                 
                 // Should have minimal overlap in fair rotation
                 let mut overlap_count = 0;
@@ -481,27 +412,17 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &5,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &0,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &5, &token_contract, &86400, &100);
         
         // Add members but don't configure batch payout
         client.join_circle(&creator, &circle_id);
         client.join_circle(&user1, &circle_id);
         
         // Try to execute batch payout without enabling it
-        client.deposit(&creator, &circle_id);
-        client.deposit(&user1, &circle_id);
+        client.deposit(&creator, &circle_id, &1);
+        client.deposit(&user1, &circle_id, &1);
         client.finalize_round(&creator, &circle_id);
         client.distribute_batch_payout(&creator, &circle_id); // Should panic
     }
@@ -522,19 +443,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &3, // Only 3 members
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &0,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &3, // Only 3 members, &token_contract, &86400, &100);
         
         // Add members
         client.join_circle(&creator, &circle_id);
@@ -560,19 +471,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &100_000_000,
-            &4,
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &0,
-        );
+        let circle_id = client.create_circle(&creator, &100_000_000, &4, &token_contract, &86400, &100);
         
         // Add members
         client.join_circle(&creator, &circle_id);
@@ -580,12 +481,12 @@ pub mod tests {
         client.join_circle(&user2, &circle_id);
         
         // Configure for 2 winners
-        client.configure_batch_payout(&creator, &circle_id, &2);
+        client.configure_batch_payout(&creator);
         
         // Execute batch payout
-        client.deposit(&creator, &circle_id);
-        client.deposit(&user1, &circle_id);
-        client.deposit(&user2, &circle_id);
+        client.deposit(&creator, &circle_id, &1);
+        client.deposit(&user1, &circle_id, &1);
+        client.deposit(&user2, &circle_id, &1);
         client.finalize_round(&creator, &circle_id);
         client.distribute_batch_payout(&creator, &circle_id);
         
@@ -620,19 +521,9 @@ pub mod tests {
         let client = SoroSusuClient::new(&env, &contract_id);
         
         env.mock_all_auths();
-        client.init(&admin);
+        client.init(&admin, &0);
         
-        let circle_id = client.create_circle(
-            &creator,
-            &10_000_000, // 1 token contribution
-            &20, // 20 members
-            &token_contract,
-            &86400,
-            &100,
-            &nft_contract,
-            &arbitrator,
-            &0,
-        );
+        let circle_id = client.create_circle(&creator, &10_000_000, // 1 token contribution, &20, // 20 members, &token_contract, &86400, &100);
         
         // Add 20 members
         client.join_circle(&creator, &circle_id);
@@ -646,9 +537,9 @@ pub mod tests {
         client.configure_batch_payout(&creator, &circle_id, &10);
         
         // All members contribute
-        client.deposit(&creator, &circle_id);
-        for user in users.iter() {
-            client.deposit(&user, &circle_id);
+        client.deposit(&creator, &circle_id, &1);
+        for user in users.iter( &1) {
+            client.deposit(&user, &circle_id, &1);
         }
         
         client.finalize_round(&creator, &circle_id);
@@ -667,3 +558,30 @@ pub mod tests {
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

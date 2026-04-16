@@ -4,26 +4,22 @@ A trustless Rotating Savings and Credit Association (ROSCA) built on Stellar Sor
 ## Table of Contents
 1. [Overview & Deployment](#overview--deployment)
 2. [Protocol Overview](#protocol-overview)
-3. [Safety & Formal Verification](#safety--formal-verification)
-4. [Core Features](#core-features)
+3. [Savings Group Lifecycle](#savings-group-lifecycle)
+4. [Public Function Signatures](#public-function-signatures)
+5. [Core Features](#core-features)
     - [Flexible Shares](#flexible-shares)
     - [Path Payments](#path-payments)
     - [Buddy System & Trust Networks](#buddy-system--trust-networks)
     - [Audit Logging](#audit-logging)
-5. [Risk Management & Security](#risk-management--security)
+6. [Risk Management & Security](#risk-management--security)
     - [Collateral & Slashing](#collateral--slashing)
     - [Guarantors & Social Vouching](#guarantors--social-vouching)
     - [Nuclear Option & Emergency Recovery](#nuclear-option--emergency-recovery)
     - [Rate Limiting](#rate-limiting)
-    - [Graceful Exit Plan](#graceful-exit-plan)
-6. [Governance & Voting](#governance--voting)
+7. [Governance & Voting](#governance--voting)
     - [Quadratic Voting](#quadratic-voting)
     - [Leniency Voting](#leniency-voting)
     - [Governance Token Mining](#governance-token-mining)
-7. [Advanced Modules](#advanced-modules)
-    - [Milestone System & Reputation](#milestone-system--reputation)
-    - [Yield Delegation & Vesting](#yield-delegation--vesting)
-    - [Gas Buffers](#gas-buffers)
 8. [Analytics & Reputation Engines](#analytics--reputation-engines)
     - [Credit Score Oracle](#credit-score-oracle)
     - [Group Resilience Rating](#group-resilience-rating)
@@ -40,107 +36,126 @@ A trustless Rotating Savings and Credit Association (ROSCA) built on Stellar Sor
 
 ### Features
 - Create savings circles with fixed contribution amounts
-- Join existing circles with flexible shares (1x or 2x contributions)
+- Join existing circles with optimized state management
 - Deposit USDC/XLM securely
-- Automated payouts with double rewards for 2nd-share members
+- Automated payouts with randomized or fixed order
 - Immutable audit log for sensitive actions
-- Family and small business friendly participation options
+- Integrated Buddy System for social security
 
 ---
 
 ## Protocol Overview
 ### Randomized Payout Order
 SoroSusu supports randomized payout queues to ensure fairness and prevent circular collusion.
-- **Random Queue**: Uses Soroban's Pseudo-Random Number Generator (`env.prng().shuffle()`) to reorder the members vector.
-- **Manual Finalization**: Admin triggers `finalize_circle()` to lock the payout order after members have joined.
+- **Random Queue**: Uses Soroban's Pseudo-Random Number Generator (`env.prng().shuffle()`) to reorder member addresses.
+- **Finalization**: Circle transition logic ensures the payout order is locked once the circle is active.
 
 ### Group Rollover (Multi-Cycle Savings)
-The protocol allows circles to persist across multiple cycles without redeployment.
-- **Rollover**: Resets payout flags and increments the `cycle_number` while preserving the existing member list.
+The protocol allows circles to persist across multiple rounds without redeployment, resetting internal round counters while preserving the member list.
 
 ---
 
-## Safety & Formal Verification
-### Safety Invariants
-1. **Vault Balance Integrity**: `vault_balance = total_deposits - total_payouts`.
-2. **Fee Consistency**: Protocol fees must never exceed the payout amount (Capped at 100%).
-3. **Contribution Completeness**: Payouts only occur when `contributions_count = member_count`.
-4. **Member Uniqueness**: One membership per circle.
-5. **Non-Negative Balances**: All arithmetic operations are checked for overflow/underflow.
+## Savings Group Lifecycle
 
-### Verification Tools
-- **Halmos**: Symbolic testing for `deposit()` and `payout()` logic.
-- **Certora**: Formal verification of vault integrity and authorization checks.
+The diagram below shows the full lifecycle of a savings group, from creation through to final payout.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open : create_circle()
+
+    Open --> Active : join_circle()\n[max members met]
+    Open --> Open : join_circle()\n[still filling]
+
+    Active --> CollectionPhase : deposit()\n[contributions pending]
+
+    CollectionPhase --> CollectionPhase : deposit()\n[rounds pending]
+    CollectionPhase --> PayoutPhase : deposit()\n[round cycle ends]
+
+    PayoutPhase --> CollectionPhase : deposit()\n[more rounds remain]
+    PayoutPhase --> Completed : deposit()\n[final member paid]
+
+    Completed --> [*]
+```
+
+### State Descriptions
+
+| State | Description |
+|---|---|
+| **Open** | The circle has been created and is accepting new members. |
+| **Active** | All required members have joined; the circle is confirmed and ready to begin rounds. |
+| **Collection Phase** | Members are depositing their fixed contribution for the current round. |
+| **Payout Phase** | Contributions for the round are complete; funds are disbursed to the recipient. |
+| **Completed** | Every member has received a payout. |
+
+---
+
+## Public Function Signatures
+
+### Initialization & Admin
+#### `init(env: Env, admin: Address, global_fee: u32)`
+Initializes the contract with a global administrator and a default penalty fee (in basis points).
+
+### Circle Management
+#### `create_circle(env: Env, creator: Address, amount: u64, max_members: u32, token: Address, cycle_duration: u64, bond_amount: u64) -> u64`
+Creates a new savings circle with a mandatory bond deposit from the creator.
+
+#### `join_circle(env: Env, user: Address, circle_id: u64)`
+Adds a member to an existing circle.
+
+### Operations
+#### `deposit(env: Env, user: Address, circle_id: u64, rounds: u32)`
+Batch deposit for one or more rounds.
+
+#### `pair_with_member(env: Env, user: Address, buddy_address: Address)`
+Sets a social buddy for security and recovery purposes.
+
+#### `set_safety_deposit(env: Env, user: Address, circle_id: u64, amount: i128)`
+Deposits collateral into a circle's safety buffer.
 
 ---
 
 ## Core Features
-
 ### Flexible Shares
-Members can participate at different contribution levels:
-- **Standard Shares (1 Share)**: Contribute 1x, receive 1x payout.
-- **Double Shares (2 Shares)**: Contribute 2x, receive 2x payout (Fixed pot size remains consistent).
+Members participate at different contribution levels (1x or 2x), with payouts adjusted according to their share weight.
 
 ### Path Payments
-Enables members to contribute using any Stellar asset (XLM, USDC, EURC) via path payments, automatically swapping to the circle's base currency during the deposit.
+Enables members to contribute using any Stellar asset, automatically swapped to the circle's base currency via Soroban's native swap capabilities.
 
 ### Buddy System & Trust Networks
-Enhances security via decentralized cross-referencing:
-- **Buddy Assignment**: Every member is paired with a "Buddy" responsible for tracking their health/activity.
-- **Leniency Proposals**: Buddies can propose grace periods for missed payments based on real-world trust.
+- **Buddy Assignment**: Every member is paired with a "Buddy" responsible for social vouching.
+- **Safety Fallback**: Safety deposits can cover a buddy's missed payment to prevent group default.
 
 ---
 
 ## Risk Management & Security
-
 ### Collateral & Slashing
-To prevent defaults, the protocol supports mandatory or voluntary collateral.
-- **Bond Staking**: Initial security deposit required for circle creation.
-- **Slashing**: Defaulting members can have their bond or previous contributions slashed and redistributed to the circle's reserve.
-
-### Guarantors & Social Vouching
-- **Vouching**: High-reputation members can vouch for new entrants.
-- **Guarantor Pool**: A separate staking pool that covers defaults in exchange for a portion of the circle's interest/fees.
+- **Bond Staking**: Creators must stake a bond to disincentivize fraudulent circle creation.
+- **Slashing**: Defaulting members can have their bond or safety deposits slashed by the admin.
 
 ### Nuclear Option & Emergency Recovery
-- **Nuclear Option**: A majority-voted "Pause and Exit" mechanism for extreme market volatility.
-- **Social Recovery**: Allows members to recover access to their participation NFT via consensus from their designated trust buddies.
+- **Nuclear Option**: A majority-voted mechanism to halt operations and return funds in case of emergency.
+- **Social Recovery**: Allows members to recover participation access via consensus from their designated buddies.
 
 ### Rate Limiting
-Prevents "DDoS" or "Spam Joining" through a tiered cooldown system for circle creation and membership joins within a single ledger window.
+A tiered cooldown system prevents spam joining or malicious circle creation within rapid succession.
 
 ---
 
 ## Governance & Voting
-
 ### Quadratic Voting
-Reduces the "plutocracy" effect by making subsequent votes from the same actor exponentially more expensive.
-`Cost = Votes²`
+Reduces plutocracy by making subsequent votes exponentially more expensive (`Cost = Votes²`).
 
 ### Leniency Voting
-A specialized voting mechanism to grant extensions to members in temporary financial distress, preventing immediate slashing and maintaining group cohesion.
-
----
-
-## Advanced Modules
-
-### Milestone System & Reputation
-Members earn rewards for consistent behavior:
-- **Consecutive Payment Bonus**: 5, 10, or 12 cycles of perfect attendance.
-- **Trust Score**: A dynamic reputation metric used to lower collateral requirements.
-
-### Gas Buffers
-A "Pay-Forward" pool where members contribute tiny amounts of XLM to cover the network fees of the circle's payout transactions, ensuring automated execution never stalls due to lack of gas.
+A specialized voting mechanism to grant extensions to members in distress, preventing immediate penalties.
 
 ---
 
 ## Analytics & Reputation Engines
-
 ### Credit Score Oracle
-Integrates on-chain transaction data and off-chain reputation (via signed Attestations) to calculate a "DeFi Credit Score" for circle prioritization.
+Integrates on-chain and off-chain data to calculate a "DeFi Credit Score" based on contribution history.
 
 ### Source of Funds Verification
-Produces cryptographic proof of participation and contribution history, enabling users to prove the legitimacy of their accumulated savings to banking institutions.
+Produces cryptographic proof of participation, enabling users to prove the legitimacy of savings to off-chain institutions.
 
 ---
 
@@ -150,17 +165,14 @@ Produces cryptographic proof of participation and contribution history, enabling
 cargo build --target wasm32-unknown-unknown --release
 ```
 
-### Git Workflow (Maintainers)
-- **Feature Branches**: `feature/[module-name]`
-- **PR Labels**: Requires `audit-required` for logic changes.
-- **Main Branch**: Protected; requires 1 pass of local integration tests.
+### Git Workflow
+- **Protected Main**: Requires a passing integration test suite.
+- **Audit Labels**: Logic changes require `audit-required` tags.
 
 ---
 
 ## Testing & Verification
-### Hyper-Inflationary Scenario Testing
-Validates the protocol against extreme volumes and high-decimal tokens (18-decimal support).
-- **Checks**: 1e27 stroop overflows, bitmap limits (64 members), and fee calculation precision.
-
-### Graceful Exit Testing
-Ensures that members can exit a circle midway if a replacement is found, preserving the circle's total capital while returning the exiting member's principal.
+### Scenario Testing
+- **Hyper-Inflation**: Validates protocol against extreme volumes (1e27 stroops).
+- **Graceful Exit**: Ensures members can exit circles midway if a replacement is found.
+- **Liquidity Buffers**: Validates reputation-based advance requests for early payouts.

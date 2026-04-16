@@ -1,4 +1,5 @@
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short,
@@ -6,13 +7,13 @@ use soroban_sdk::{
 };
 use std::panic;
 
-use sorosusu::SoroSusuClient;
-use sorosusu::SoroSusuTrait;
-use sorosusu::DataKey;
-use sorosusu::VestingVaultLienInfo;
-use sorosusu::LienInfo;
-use sorosusu::LienStatus;
-use sorosusu::MemberStatus;
+use sorosusu_contracts::SoroSusuClient;
+use sorosusu_contracts::SoroSusuTrait;
+use sorosusu_contracts::DataKey;
+use sorosusu_contracts::VestingVaultLienInfo;
+use sorosusu_contracts::LienInfo;
+use sorosusu_contracts::LienStatus;
+use sorosusu_contracts::MemberStatus;
 
 // Mock Vesting Vault Contract for testing
 #[contract]
@@ -20,7 +21,7 @@ pub struct MockVestingVault;
 
 #[contractimpl]
 impl MockVestingVault {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn init_mock(env: Env, admin: Address) {
         // Mock initialization
     }
     
@@ -67,28 +68,14 @@ fn test_create_vesting_lien() {
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create a high-value circle that requires collateral
-    let circle_id = client.create_circle(
-        &creator,
-        &2_000_000_0, // 200 tokens per contribution
-        &5u32,        // 5 members = 1000 tokens total (requires collateral)
-        &token_contract,
-        &86400u64,    // 1 day cycles
-        &100u32,      // 1% insurance
-        &nft_contract,
-        &admin,
-    );
+    let circle_id = client.create_circle(&creator, &2_000_000_0, // 200 tokens per contribution, &5u32, // 5 members = 1000 tokens total (requires collateral), &86400u64, // 1 day cycles, &100u32, &0u64);
     
     // Create vesting lien
     let lien_amount = 400_000_0; // 40 tokens (20% of 200 tokens contribution)
-    let lien_id = client.create_vesting_lien(
-        &member,
-        &circle_id,
-        &vesting_vault_contract,
-        &lien_amount,
-    );
+    let lien_id = client.create_vesting_lien( &member, &circle_id, &vesting_vault_contract, &lien_amount);
     
     // Verify lien was created
     assert_eq!(lien_id, 1);
@@ -121,37 +108,18 @@ fn test_join_circle_with_vesting_lien() {
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create a high-value circle that requires collateral
-    let circle_id = client.create_circle(
-        &creator,
-        &2_000_000_0, // 200 tokens per contribution
-        &5u32,        // 5 members = 1000 tokens total (requires collateral)
-        &token_contract,
-        &86400u64,    // 1 day cycles
-        &100u32,      // 1% insurance
-        &nft_contract,
-        &admin,
-    );
+    let circle_id = client.create_circle(&creator, &2_000_000_0, // 200 tokens per contribution, &5u32, // 5 members = 1000 tokens total (requires collateral), &86400u64, // 1 day cycles, &100u32, &0u64);
     
     // Create vesting lien with sufficient amount
     let total_contribution_value = 2_000_000_0 * 5; // 1000 tokens total
     let required_lien_amount = (total_contribution_value * 2000) / 10000; // 20% = 200 tokens
-    client.create_vesting_lien(
-        &member,
-        &circle_id,
-        &vesting_vault_contract,
-        &required_lien_amount,
-    );
+    client.create_vesting_lien( &member, &circle_id, &vesting_vault_contract, &required_lien_amount);
     
     // Should be able to join circle with lien
-    client.join_circle(
-        &member,
-        &circle_id,
-        &1u32,
-        &None,
-    );
+    client.join_circle(&member, &circle_id);
     
     // Verify member joined successfully
     let circle = client.get_circle(&circle_id);
@@ -176,35 +144,17 @@ fn test_join_circle_insufficient_lien() {
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create a high-value circle that requires collateral
-    let circle_id = client.create_circle(
-        &creator,
-        &2_000_000_0, // 200 tokens per contribution
-        &5u32,        // 5 members = 1000 tokens total (requires collateral)
-        &token_contract,
-        &86400u64,    // 1 day cycles
-        &100u32,      // 1% insurance
-        &nft_contract,
-        &admin,
-    );
+    let circle_id = client.create_circle(&creator, &2_000_000_0, // 200 tokens per contribution, &5u32, // 5 members = 1000 tokens total (requires collateral), &86400u64, // 1 day cycles, &100u32, &0u64);
     
     // Create vesting lien with insufficient amount
-    client.create_vesting_lien(
-        &member,
-        &circle_id,
-        &vesting_vault_contract,
-        &100_000_0, // Only 10 tokens (should be 200)
+    client.create_vesting_lien( &member, &circle_id, &vesting_vault_contract, &100_000_0, // Only 10 tokens (should be 200)
     );
     
     // Should fail to join circle
-    client.join_circle(
-        &member,
-        &circle_id,
-        &1u32,
-        &None,
-    );
+    client.join_circle(&member, &circle_id);
 }
 
 #[test]
@@ -224,27 +174,18 @@ fn test_claim_vesting_lien_on_default() {
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create a high-value circle
-    let circle_id = client.create_circle(
-        &creator,
-        &2_000_000_0,
-        &5u32,
-        &token_contract,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-        &admin,
-    );
+    let circle_id = client.create_circle(&creator, &2_000_000_0, &5u32, &token_contract, &86400u64, &100u64);
     
     // Creator joins first
-    client.join_circle(&creator, &circle_id, &1u32, &None);
+    client.join_circle(&creator, &circle_id);
     
     // Member creates lien and joins
     let lien_amount = 400_000_0;
     client.create_vesting_lien(&member, &circle_id, &vesting_vault_contract, &lien_amount);
-    client.join_circle(&member, &circle_id, &1u32, &None);
+    client.join_circle(&member, &circle_id);
     
     // Verify lien is active
     let lien_info = client.get_vesting_lien(&member, &circle_id).unwrap();
@@ -276,31 +217,22 @@ fn test_auto_release_lien_on_completion() {
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create a circle
-    let circle_id = client.create_circle(
-        &creator,
-        &1_000_000_0, // 100 tokens per contribution
-        &2u32,         // 2 members (small for easier testing)
-        &token_contract,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-        &admin,
-    );
+    let circle_id = client.create_circle(&creator, &1_000_000_0, // 100 tokens per contribution, &2u32); // 2 members (small for easier testing), &86400u64, &100u32
     
     // Both members join
-    client.join_circle(&creator, &circle_id, &1u32, &None);
+    client.join_circle(&creator, &circle_id);
     
     let lien_amount = 200_000_0;
     client.create_vesting_lien(&member, &circle_id, &vesting_vault_contract, &lien_amount);
-    client.join_circle(&member, &circle_id, &1u32, &None);
+    client.join_circle(&member, &circle_id);
     
     // Start round and complete contributions
     client.start_round(&creator, &circle_id);
-    client.deposit(&creator, &circle_id);
-    client.deposit(&member, &circle_id);
+    client.deposit(&creator, &circle_id, &1);
+    client.deposit(&member, &circle_id, &1);
     
     // Finalize round
     client.finalize_round(&creator, &circle_id);
@@ -333,19 +265,10 @@ fn test_get_circle_liens() {
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create a circle
-    let circle_id = client.create_circle(
-        &creator,
-        &1_000_000_0,
-        &3u32,
-        &token_contract,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-        &admin,
-    );
+    let circle_id = client.create_circle(&creator, &1_000_000_0, &3u32, &token_contract, &86400u64, &100u64);
     
     // Create multiple liens
     client.create_vesting_lien(&member1, &circle_id, &vesting_vault_contract, &200_000_0);
@@ -373,7 +296,7 @@ fn test_verify_vesting_vault() {
     let contract_id = env.register_contract(None, sorosusu::SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Test vault verification (mock implementation returns true)
     let vault_contract = Address::generate(&env);
@@ -387,7 +310,7 @@ pub struct MockToken;
 
 #[contractimpl]
 impl MockToken {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn init_mock_1(env: Env, admin: Address) {
         // Mock
     }
     
@@ -417,7 +340,7 @@ pub struct MockNft;
 
 #[contractimpl]
 impl MockNft {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn init_mock_2(env: Env, admin: Address) {
         // Mock
     }
     
@@ -433,3 +356,29 @@ impl MockNft {
         Address::generate(&env) // Mock owner
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

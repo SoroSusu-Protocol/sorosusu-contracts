@@ -1,10 +1,10 @@
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::{
     contract, contractimpl, testutils::{Address as _, Ledger as _}, token, Address, Env,
 };
 
-use sorosusu_contracts::{SoroSusu, SoroSusuClient};
 
 #[contract]
 pub struct MockNft;
@@ -42,23 +42,14 @@ fn setup_circle() -> (Env, Address, Address, Address, u64, Address, Address, Add
 
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
-    client.init(&admin);
+    client.init(&admin, &0);
 
-    let circle_id = client.create_circle(
-        &creator,
-        &1_000,
-        &2,
-        &token_id,
-        &86_400,
-        &100,
-        &nft_id,
-        &arbitrator,
-    );
+    let circle_id = client.create_circle(&creator, &1_000, &2, &token_id, &86_400, &100);
 
-    client.join_circle(&creator, &circle_id, &1, &None);
-    client.join_circle(&tenant, &circle_id, &1, &None);
-    client.deposit(&creator, &circle_id);
-    client.deposit(&tenant, &circle_id);
+    client.join_circle(&creator, &circle_id);
+    client.join_circle(&tenant, &circle_id);
+    client.deposit(&creator, &circle_id, &1);
+    client.deposit(&tenant, &circle_id, &1);
     client.finalize_round(&creator, &circle_id);
 
     env.ledger().set_timestamp(env.ledger().timestamp() + 31 * 24 * 60 * 60);
@@ -72,8 +63,7 @@ fn setup_circle() -> (Env, Address, Address, Address, u64, Address, Address, Add
         creator,
         tenant,
         leaseflow_router,
-        lease_instance,
-    )
+        lease_instance)
 }
 
 #[test]
@@ -116,3 +106,30 @@ fn test_leaseflow_default_locks_payout() {
     client.handle_leaseflow_default(&leaseflow_router, &tenant, &circle_id);
     client.claim_pot(&tenant, &circle_id);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

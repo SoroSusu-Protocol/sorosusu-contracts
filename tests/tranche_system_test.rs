@@ -1,7 +1,8 @@
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::{Address, Env, Vec, Symbol};
-use crate::{SoroSusu, SoroSusuClient, TrancheSchedule, TrancheStatus};
+use sorosusu_contracts::{SoroSusu, SoroSusuClient, TrancheSchedule, TrancheStatus};
 
 #[contract]
 pub struct MockToken;
@@ -9,14 +10,14 @@ pub struct MockToken;
 #[contractimpl]
 impl MockToken {
     pub fn mint(env: Env, to: Address, amount: i128) {
-        let mut balance = env.storage().instance().get::<_, i128>(&("balance".into())).unwrap_or(0);
+        let mut balance = env.storage().instance().get::<Symbol, i128>(&symbol_short!("balance")).unwrap_or(0);
         balance += amount;
         env.storage().instance().set(&("balance".into()), &balance);
     }
     
     pub fn balance(env: Env, account: Address) -> i128 {
         if account == env.current_contract_address() {
-            env.storage().instance().get::<_, i128>(&("balance".into())).unwrap_or(0)
+            env.storage().instance().get::<Symbol, i128>(&symbol_short!("balance")).unwrap_or(0)
         } else {
             1000_000_000_000 // Large balance for testing
         }
@@ -40,7 +41,7 @@ fn setup_test_env() -> (Env, SoroSusuClient<'static>, Address, Address, Address,
     let client = SoroSusuClient::new(&env, &contract_id);
     
     // Initialize
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create mock token
     let token_id = env.register_contract(None, MockToken);
@@ -51,17 +52,7 @@ fn setup_test_env() -> (Env, SoroSusuClient<'static>, Address, Address, Address,
     let nft_address = Address::from_token(&nft_id);
     
     // Create circle with 3 members
-    let circle_id = client.create_circle(
-        &circle_creator,
-        &100_000_000, // 1 token contribution (7 decimals)
-        &3,
-        &token_address,
-        &86400, // 1 day cycle
-        &100, // 1% insurance fee
-        &nft_address,
-        &admin, // arbitrator
-        &100, // 1% organizer fee
-    );
+    let circle_id = client.create_circle(&circle_creator, &100_000_000i128, &3u32, &token_address, &86400u64, &0i128);
     
     (env, client, admin, circle_creator, member1, circle_id)
 }
@@ -80,9 +71,9 @@ fn test_tranche_schedule_creation_on_payout() {
     client.join_circle(&member3, &circle_id);
     
     // All members contribute
-    client.deposit(&member1, &circle_id);
-    client.deposit(&member2, &circle_id);
-    client.deposit(&member3, &circle_id);
+    client.deposit(&member1);
+    client.deposit(&member2, &circle_id, &1);
+    client.deposit(&member3, &circle_id, &1);
     
     // Finalize round
     client.finalize_round(&circle_creator, &circle_id);
@@ -125,9 +116,9 @@ fn test_tranche_claim_unlocks_after_one_round() {
     client.join_circle(&member3, &circle_id);
     
     // Round 1: All contribute
-    client.deposit(&member1, &circle_id);
-    client.deposit(&member2, &circle_id);
-    client.deposit(&member3, &circle_id);
+    client.deposit(&member1);
+    client.deposit(&member2, &circle_id, &1);
+    client.deposit(&member3, &circle_id, &1);
     
     client.finalize_round(&circle_creator, &circle_id);
     client.distribute_payout(&circle_creator, &circle_id);
@@ -144,9 +135,9 @@ fn test_tranche_claim_unlocks_after_one_round() {
     assert!(result.is_err());
     
     // Complete another round (advance time/round)
-    client.deposit(&member1, &circle_id);
-    client.deposit(&member2, &circle_id);
-    client.deposit(&member3, &circle_id);
+    client.deposit(&member1, &circle_id, &1);
+    client.deposit(&member2, &circle_id, &1);
+    client.deposit(&member3, &circle_id, &1);
     
     client.finalize_round(&circle_creator, &circle_id);
     client.distribute_payout(&circle_creator, &circle_id);
@@ -173,9 +164,9 @@ fn test_clawback_on_default() {
     client.join_circle(&member3, &circle_id);
     
     // Round 1: member1 receives pot
-    client.deposit(&member1, &circle_id);
-    client.deposit(&member2, &circle_id);
-    client.deposit(&member3, &circle_id);
+    client.deposit(&member1);
+    client.deposit(&member2, &circle_id, &1);
+    client.deposit(&member3, &circle_id, &1);
     
     client.finalize_round(&circle_creator, &circle_id);
     client.distribute_payout(&circle_creator, &circle_id);
@@ -186,8 +177,8 @@ fn test_clawback_on_default() {
     assert!(total_locked > 0);
     
     // Round 2: member1 defaults (doesn't contribute)
-    client.deposit(&member2, &circle_id);
-    client.deposit(&member3, &circle_id);
+    client.deposit(&member2, &circle_id, &1);
+    client.deposit(&member3, &circle_id, &1);
     // member1 does NOT contribute - DEFAULT!
     
     // Mark member1 as defaulted
@@ -221,17 +212,17 @@ fn test_defaulted_member_cannot_claim_tranche() {
     client.join_circle(&member3, &circle_id);
     
     // Round 1
-    client.deposit(&member1, &circle_id);
-    client.deposit(&member2, &circle_id);
-    client.deposit(&member3, &circle_id);
+    client.deposit(&member1);
+    client.deposit(&member2, &circle_id, &1);
+    client.deposit(&member3, &circle_id, &1);
     
     client.finalize_round(&circle_creator, &circle_id);
     client.distribute_payout(&circle_creator, &circle_id);
     
     // Advance to next round where member1 can claim
-    client.deposit(&member1, &circle_id);
-    client.deposit(&member2, &circle_id);
-    client.deposit(&member3, &circle_id);
+    client.deposit(&member1, &circle_id, &1);
+    client.deposit(&member2, &circle_id, &1);
+    client.deposit(&member3, &circle_id, &1);
     
     client.finalize_round(&circle_creator, &circle_id);
     client.distribute_payout(&circle_creator, &circle_id);
@@ -262,9 +253,9 @@ fn test_full_cycle_with_tranches() {
     // Simulate full 3-round cycle
     for round in 0..3 {
         // All members contribute
-        client.deposit(&member1, &circle_id);
-        client.deposit(&member2, &circle_id);
-        client.deposit(&member3, &circle_id);
+        client.deposit(&member1);
+        client.deposit(&member2, &circle_id, &1);
+        client.deposit(&member3, &circle_id, &1);
         
         // Finalize and distribute
         client.finalize_round(&circle_creator, &circle_id);
@@ -272,9 +263,9 @@ fn test_full_cycle_with_tranches() {
         
         // Current recipient gets 70% immediately, 30% in tranches
         let current_recipient = match round {
-            0 => &member1,
-            1 => &member2,
-            _ => &member3,
+            0 =>, &member1,
+            1 =>, &member2,
+            _ =>, &member3,
         };
         
         let schedule = client.get_tranche_schedule(&circle_id, current_recipient);
@@ -287,3 +278,31 @@ fn test_full_cycle_with_tranches() {
         assert!(schedule.is_some());
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

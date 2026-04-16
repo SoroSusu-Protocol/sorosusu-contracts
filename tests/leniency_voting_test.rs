@@ -1,4 +1,5 @@
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String};
 use soroban_sdk::testutils::Address as _;
@@ -28,21 +29,13 @@ fn test_request_leniency_and_approval_updates_social_capital() {
     let nft_contract = env.register_contract(None, MockNft);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle and join members
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u64);
 
-    client.join_circle(&requester, &circle_id, &1u32, &None);
-    client.join_circle(&voter, &circle_id, &1u32, &None);
+    client.join_circle(&requester, &circle_id);
+    client.join_circle(&voter, &circle_id);
     
     // Request leniency
     let reason = String::from_str(&env, "Medical emergency - need extra time");
@@ -78,9 +71,9 @@ fn test_cannot_vote_for_own_request() {
     let token = Address::generate(&env);
     let nft_contract = env.register_contract(None, MockNft);
 
-    client.init(&admin);
-    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u32, &nft_contract);
-    client.join_circle(&requester, &circle_id, &1u32, &None);
+    client.init(&admin, &0);
+    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u64);
+    client.join_circle(&requester, &circle_id);
 
     let reason = String::from_str(&env, "Need extra time");
     client.request_leniency(&requester, &circle_id, &reason);
@@ -88,3 +81,30 @@ fn test_cannot_vote_for_own_request() {
     let result = client.try_vote_on_leniency(&requester, &circle_id, &requester, &LeniencyVote::Approve);
     assert!(result.is_err());
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

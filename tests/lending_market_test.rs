@@ -1,7 +1,9 @@
+use sorosusu_contracts::{SoroSusu, SoroSusuClient};
 #![cfg(test)]
+use soroban_sdk::testutils::Address as _;
 
 use soroban_sdk::{Address, Env, String, Vec, Symbol};
-use crate::{
+use sorosusu_contracts::{
     InterSusuLendingMarket, InterSusuLendingMarketClient, LendingMarketConfig, 
     LendingPoolInfo, LendingPosition, RepaymentSchedule, LendingMarketStats,
     EmergencyLoan, LendingVoteChoice, RiskCategory, LiquidityProvider
@@ -63,33 +65,12 @@ fn test_lending_pool_creation() {
     client.init_lending_market(&admin);
     
     // Create circles for testing
-    let lender_circle_id = client.create_circle(
-        &lender_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env), // Mock token
-        &86400, // 1 day
-        &100, // 1% fee
-        &Address::generate(&env), // Mock NFT
-        &admin, // arbitrator
-    );
+    let lender_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), // Mock token, &86400, // 1 day, &100));
     
-    let borrower_circle_id = client.create_circle(
-        &borrower_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env), // Mock token
-        &86400, // 1 day
-        &100, // 1% fee
-        &Address::generate(&env), // Mock NFT
-        &admin, // arbitrator
-    );
+    let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), // Mock token, &86400, // 1 day, &100));
     
     // Test pool creation
-    let pool_id = client.create_lending_pool(
-        &lender_circle_id,
-        &borrower_circle_id,
-        &500_000_000, // 500 tokens initial liquidity
+    let pool_id = client.create_lending_pool( &lender_circle_id, &borrower_circle_id, &500_000_000, // 500 tokens initial liquidity
     );
     
     // Verify pool was created
@@ -117,44 +98,18 @@ fn test_lending_from_pool() {
     // Setup
     client.init_lending_market(&admin);
     
-    let lender_circle_id = client.create_circle(
-        &lender_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let lender_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
-    let borrower_circle_id = client.create_circle(
-        &borrower_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
     // Create pool
-    let pool_id = client.create_lending_pool(
-        &lender_circle_id,
-        &borrower_circle_id,
-        &1000_000_000,
-    );
+    let pool_id = client.create_lending_pool( &lender_circle_id, &borrower_circle_id, &1000_000_000);
     
     // Create borrower with good reputation
     let borrower = Address::generate(&env);
     
     // Test successful lending
-    let position_id = client.lend_from_pool(
-        &pool_id,
-        &borrower,
-        &100_000_000, // 100 tokens
-        &1209600, // 14 days
+    let position_id = client.lend_from_pool( &pool_id, &borrower, &100_000_000, // 100 tokens, &1209600, // 14 days
     );
     
     // Verify position
@@ -213,42 +168,16 @@ fn test_liquidity_provision() {
     // Setup
     client.init_lending_market(&admin);
     
-    let lender_circle_id = client.create_circle(
-        &lender_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let lender_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
-    let borrower_circle_id = client.create_circle(
-        &borrower_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
     // Create pool
-    let pool_id = client.create_lending_pool(
-        &lender_circle_id,
-        &borrower_circle_id,
-        &100_000_000,
-    );
+    let pool_id = client.create_lending_pool( &lender_circle_id, &borrower_circle_id, &100_000_000);
     
     // Test adding liquidity
     let provider = Address::generate(&env);
-    let provider_id = client.add_liquidity(
-        &pool_id,
-        &provider,
-        &200_000_000, // 200 tokens
-        &604800, // 7 days lock
+    let provider_id = client.add_liquidity( &pool_id, &provider, &200_000_000, // 200 tokens, &604800, // 7 days lock
     );
     
     // Verify liquidity provider
@@ -265,42 +194,15 @@ fn test_repayment_processing() {
     // Setup
     client.init_lending_market(&admin);
     
-    let lender_circle_id = client.create_circle(
-        &lender_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let lender_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
-    let borrower_circle_id = client.create_circle(
-        &borrower_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
     // Create pool and position
-    let pool_id = client.create_lending_pool(
-        &lender_circle_id,
-        &borrower_circle_id,
-        &100_000_000,
-    );
+    let pool_id = client.create_lending_pool( &lender_circle_id, &borrower_circle_id, &100_000_000);
     
     let borrower = Address::generate(&env);
-    let position_id = client.lend_from_pool(
-        &pool_id,
-        &borrower,
-        &100_000_000,
-        &1209600,
-    );
+    let position_id = client.lend_from_pool( &pool_id, &borrower, &100_000_000, &1209600);
     
     // Test partial repayment
     client.process_repayment(&position_id, &10_000_000);
@@ -327,35 +229,12 @@ fn test_emergency_loan_system() {
     // Setup
     client.init_lending_market(&admin);
     
-    let requester_circle_id = client.create_circle(
-        &lender_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let requester_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
-    let borrower_circle_id = client.create_circle(
-        &borrower_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
     // Test emergency loan request
-    let loan_id = client.request_emergency_loan(
-        &requester_circle_id,
-        &borrower_circle_id,
-        &50_000_000,
-        &String::from_str(&env, "Emergency medical expense"),
-    );
+    let loan_id = client.request_emergency_loan( &requester_circle_id, &borrower_circle_id, &50_000_000, &String::from_str(&env, "Emergency medical expense"));
     
     // Test voting
     let borrower = Address::generate(&env);
@@ -386,43 +265,16 @@ fn test_lending_market_statistics() {
     
     // Create some test data
     for i in 1..=3 {
-        let lender_circle_id = client.create_circle(
-            &lender_creator,
-            &1000_000_000,
-            &5,
-            &Address::generate(&env),
-            &86400,
-            &100,
-            &Address::generate(&env),
-            &admin,
-        );
+        let lender_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
         
-        let borrower_circle_id = client.create_circle(
-            &borrower_creator,
-            &1000_000_000,
-            &5,
-            &Address::generate(&env),
-            &86400,
-            &100,
-            &Address::generate(&env),
-            &admin,
-        );
+        let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
         
-        let pool_id = client.create_lending_pool(
-            &lender_circle_id,
-            &borrower_circle_id,
-            &(i * 100_000_000),
-        );
+        let pool_id = client.create_lending_pool( &lender_circle_id, &borrower_circle_id, &(i * 100_000_000));
         
         // Create some loans
         for j in 1..=2 {
             let borrower = Address::generate(&env);
-            client.lend_from_pool(
-                &pool_id,
-                &borrower,
-                &(50_000_000),
-                &1209600,
-            );
+            client.lend_from_pool( &pool_id, &borrower, &(50_000_000), &1209600);
         }
     }
     
@@ -444,66 +296,29 @@ fn test_lending_market_edge_cases() {
     client.init_lending_market(&admin);
     
     // Test minimum amount violation
-    let lender_circle_id = client.create_circle(
-        &lender_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let lender_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
-    let borrower_circle_id = client.create_circle(
-        &borrower_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
-    let pool_id = client.create_lending_pool(
-        &lender_circle_id,
-        &borrower_circle_id,
-        &100_000_000,
-    );
+    let pool_id = client.create_lending_pool( &lender_circle_id, &borrower_circle_id, &100_000_000);
     
     let borrower = Address::generate(&env);
     
     // Should panic for amount below minimum
     let result = std::panic::catch_unwind(|| {
-        client.lend_from_pool(
-            &pool_id,
-            &borrower,
-            &50_000_000, // Below MIN_LENDING_AMOUNT (100_000_000)
-            &1209600,
-        );
+        client.lend_from_pool( &pool_id, &borrower, &50_000_000); // Below MIN_LENDING_AMOUNT (100_000_000)
     });
     assert!(result.is_err());
     
     // Should panic for insufficient pool liquidity
     let result = std::panic::catch_unwind(|| {
-        client.lend_from_pool(
-            &pool_id,
-            &Address::generate(&env),
-            &200_000_000, // More than available (100_000_000)
-            &1209600,
-        );
+        client.lend_from_pool( &pool_id, &Address::generate(&env), &200_000_000); // More than available (100_000_000)
     });
     assert!(result.is_err());
     
     // Should panic for excessive LTV ratio
     let result = std::panic::catch_unwind(|| {
-        client.lend_from_pool(
-            &pool_id,
-            &Address::generate(&env),
-            &150_000_000, // Would exceed 90% LTV for most collateral
-            &1209600,
-        );
+        client.lend_from_pool( &pool_id, &Address::generate(&env), &150_000_000, // Would exceed 90% LTV for most collateral, &1209600);
     });
     assert!(result.is_err());
 }
@@ -520,37 +335,43 @@ fn test_lending_market_configuration() {
     // Note: This would require admin functions to toggle emergency mode
     // For now, test that emergency loans can be created
     
-    let requester_circle_id = client.create_circle(
-        &lender_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let requester_circle_id = client.create_circle(&lender_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
-    let borrower_circle_id = client.create_circle(
-        &borrower_creator,
-        &1000_000_000,
-        &5,
-        &Address::generate(&env),
-        &86400,
-        &100,
-        &Address::generate(&env),
-        &admin,
-    );
+    let borrower_circle_id = client.create_circle(&borrower_creator, &1000_000_000, &5, &Address::generate(&env), &86400, &100));
     
     // Emergency loan should work even in normal mode
-    let loan_id = client.request_emergency_loan(
-        &requester_circle_id,
-        &borrower_circle_id,
-        &25_000_000,
-        &String::from_str(&env, "Test emergency loan"),
-    );
+    let loan_id = client.request_emergency_loan( &requester_circle_id, &borrower_circle_id, &25_000_000, &String::from_str(&env, "Test emergency loan"));
     
     let loan = client.get_emergency_loan(&loan_id);
     assert_eq!(loan.amount, 25_000_000);
     assert!(loan.status, crate::LendingMarketStatus::Active);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
