@@ -302,7 +302,15 @@ impl SoroSusu {
             proposal_count: 0, total_cycle_value: 0, winners_per_round: 1, batch_payout_enabled: false, current_pot_recipient: None, is_round_finalized: false, round_number: 0,
             dissolution_status: DissolutionStatus::Active, dissolution_deadline: None
         });
+        Self::record_audit_logic(&env, creator, AuditAction::AdminAction, id);
         id
+    }
+    pub fn record_audit_logic(env: &Env, actor: Address, action: AuditAction, resource_id: u64) {
+        let mut count: u64 = env.storage().instance().get(&symbol_short!("AudCnt")).unwrap_or(0);
+        count += 1;
+        let entry = AuditEntry { id: count, actor, action, timestamp: env.ledger().timestamp(), resource_id };
+        env.storage().instance().set(&DataKey::K1(symbol_short!("AudE"), count), &entry);
+        env.storage().instance().set(&symbol_short!("AudCnt"), &count);
     }
 }
 
@@ -319,7 +327,7 @@ impl SoroSusuTrait for SoroSusu {
         env.storage().instance().set(&DataKey::K1(symbol_short!("Bsk"), id), &bsk);
         id
     }
-    fn join_circle(env: Env, u: Address, cid: u64) { u.require_auth(); let mut c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); if c.member_count >= c.max_members { panic!("Circle full"); } c.member_count += 1; c.member_addresses.push_back(u.clone()); env.storage().instance().set(&DataKey::K1(symbol_short!("C"), cid), &c); env.storage().instance().set(&DataKey::K2(symbol_short!("M"), cid, u.clone()), &Member { address: u.clone(), index: c.member_count - 1, contribution_count: 0, last_contribution_time: 0, status: MemberStatus::Active, tier_multiplier: 1, referrer: None, buddy: None, has_contributed_current_round: false, total_contributions: 0 }); env.storage().instance().set(&DataKey::K1A(symbol_short!("Mem"), u.clone()), &Member { address: u, index: 0, contribution_count: 0, last_contribution_time: 0, status: MemberStatus::Active, tier_multiplier: 1, referrer: None, buddy: None, has_contributed_current_round: false, total_contributions: 0 }); }
+    fn join_circle(env: Env, u: Address, cid: u64) { u.require_auth(); let mut c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); if c.member_count >= c.max_members { panic!("Circle full"); } c.member_count += 1; c.member_addresses.push_back(u.clone()); env.storage().instance().set(&DataKey::K1(symbol_short!("C"), cid), &c); env.storage().instance().set(&DataKey::K2(symbol_short!("M"), cid, u.clone()), &Member { address: u.clone(), index: c.member_count - 1, contribution_count: 0, last_contribution_time: 0, status: MemberStatus::Active, tier_multiplier: 1, referrer: None, buddy: None, has_contributed_current_round: false, total_contributions: 0 }); env.storage().instance().set(&DataKey::K1A(symbol_short!("Mem"), u.clone()), &Member { address: u.clone(), index: 0, contribution_count: 0, last_contribution_time: 0, status: MemberStatus::Active, tier_multiplier: 1, referrer: None, buddy: None, has_contributed_current_round: false, total_contributions: 0 }); Self::record_audit_logic(&env, u, AuditAction::AdminAction, cid); }
     fn deposit(env: Env, u: Address, cid: u64, _r: u32) { u.require_auth(); let mut m: Member = env.storage().instance().get(&DataKey::K2(symbol_short!("M"), cid, u.clone())).unwrap(); let c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); token::Client::new(&env, &c.token).transfer(&u, &env.current_contract_address(), &c.contribution_amount); m.contribution_count += 1; m.total_contributions += c.contribution_amount; m.has_contributed_current_round = true; env.storage().instance().set(&DataKey::K2(symbol_short!("M"), cid, u.clone()), &m); env.storage().instance().set(&DataKey::K1A(symbol_short!("Mem"), u), &m); }
     fn deposit_basket(env: Env, u: Address, cid: u64) {
         u.require_auth();
@@ -338,7 +346,7 @@ impl SoroSusuTrait for SoroSusu {
     fn vote_duration(env: Env, u: Address, _cid: u64, pid: u64, app: bool) { u.require_auth(); let mut p: DurationProposal = env.storage().instance().get(&DataKey::K1(symbol_short!("PDur"), pid)).unwrap(); if app { p.votes_for += 1; } else { p.votes_against += 1; } env.storage().instance().set(&DataKey::K1(symbol_short!("PDur"), pid), &p); }
     fn slash_bond(_env: Env, adm: Address, _cid: u64) { adm.require_auth(); }
     fn release_bond(_env: Env, adm: Address, _cid: u64) { adm.require_auth(); }
-    fn pair_with_member(env: Env, u: Address, buddy: Address) { u.require_auth(); env.storage().instance().set(&DataKey::K1A(symbol_short!("Bud"), u), &buddy); }
+    fn pair_with_member(env: Env, u: Address, buddy: Address) { u.require_auth(); env.storage().instance().set(&DataKey::K1A(symbol_short!("Bud"), u.clone()), &buddy); Self::record_audit_logic(&env, u, AuditAction::AdminAction, 0); }
     fn set_safety_deposit(env: Env, u: Address, _cid: u64, amt: i128) { u.require_auth(); env.storage().instance().set(&DataKey::K1A(symbol_short!("Safe"), u), &amt); }
     fn propose_address_change(env: Env, prop: Address, cid: u64, old: Address, new: Address) { prop.require_auth(); let mut c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); c.recovery_old_address = Some(old); c.recovery_new_address = Some(new); env.storage().instance().set(&DataKey::K1(symbol_short!("C"), cid), &c); }
     fn vote_for_recovery(env: Env, voter: Address, cid: u64) { voter.require_auth(); let mut c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); c.recovery_votes_bitmap |= 1; env.storage().instance().set(&DataKey::K1(symbol_short!("C"), cid), &c); }
@@ -361,9 +369,9 @@ impl SoroSusuTrait for SoroSusu {
     fn release_collateral(env: Env, _caller: Address, cid: u64, m: Address) { let mut i: CollateralInfo = env.storage().instance().get(&DataKey::K2(symbol_short!("Vlt"), cid, m.clone())).unwrap(); let c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); token::Client::new(&env, &c.token).transfer(&env.current_contract_address(), &m, &i.amount); i.status = CollateralStatus::Released; env.storage().instance().set(&DataKey::K2(symbol_short!("Vlt"), cid, m), &i); }
     fn mark_member_defaulted(env: Env, caller: Address, cid: u64, m: Address) { caller.require_auth(); let mut mem: Member = env.storage().instance().get(&DataKey::K2(symbol_short!("M"), cid, m.clone())).unwrap(); mem.status = MemberStatus::Defaulted; env.storage().instance().set(&DataKey::K2(symbol_short!("M"), cid, m.clone()), &mem); env.storage().instance().set(&DataKey::K1A(symbol_short!("Mem"), m), &mem); }
     fn get_audit_entry(env: Env, id: u64) -> AuditEntry { env.storage().instance().get(&DataKey::K1(symbol_short!("AudE"), id)).unwrap() }
-    fn query_audit_by_actor(env: Env, _actor: Address, _s: u64, _e: u64, _o: u32, _l: u32) -> Vec<AuditEntry> { Vec::new(&env) }
-    fn query_audit_by_resource(env: Env, _rid: u64, _s: u64, _e: u64, _o: u32, _l: u32) -> Vec<AuditEntry> { Vec::new(&env) }
-    fn query_audit_by_time(env: Env, _s: u64, _e: u64, _o: u32, _l: u32) -> Vec<AuditEntry> { Vec::new(&env) }
+    fn query_audit_by_actor(env: Env, actor: Address, s: u64, e: u64, _o: u32, _l: u32) -> Vec<AuditEntry> { let count: u64 = env.storage().instance().get(&symbol_short!("AudCnt")).unwrap_or(0); let mut res = Vec::new(&env); for i in 1..=count { if let Some(ent) = env.storage().instance().get::<DataKey, AuditEntry>(&DataKey::K1(symbol_short!("AudE"), i)) { if ent.actor == actor && ent.timestamp >= s && ent.timestamp <= e { res.push_back(ent); } } } res }
+    fn query_audit_by_resource(env: Env, rid: u64, s: u64, e: u64, _o: u32, _l: u32) -> Vec<AuditEntry> { let count: u64 = env.storage().instance().get(&symbol_short!("AudCnt")).unwrap_or(0); let mut res = Vec::new(&env); for i in 1..=count { if let Some(ent) = env.storage().instance().get::<DataKey, AuditEntry>(&DataKey::K1(symbol_short!("AudE"), i)) { if ent.resource_id == rid && ent.timestamp >= s && ent.timestamp <= e { res.push_back(ent); } } } res }
+    fn query_audit_by_time(env: Env, s: u64, e: u64, _o: u32, _l: u32) -> Vec<AuditEntry> { let count: u64 = env.storage().instance().get(&symbol_short!("AudCnt")).unwrap_or(0); let mut res = Vec::new(&env); for i in 1..=count { if let Some(ent) = env.storage().instance().get::<DataKey, AuditEntry>(&DataKey::K1(symbol_short!("AudE"), i)) { if ent.timestamp >= s && ent.timestamp <= e { res.push_back(ent); } } } res }
     fn set_leaseflow_contract(env: Env, adm: Address, rot: Address) { adm.require_auth(); env.storage().instance().set(&DataKey::K(symbol_short!("LRot")), &rot); }
     fn authorize_leaseflow_payout(env: Env, u: Address, cid: u64, li: Address) { u.require_auth(); env.storage().instance().set(&DataKey::K2(symbol_short!("LAuth"), cid, u), &li); }
     fn handle_leaseflow_default(env: Env, rot: Address, ten: Address, cid: u64) { rot.require_auth(); env.storage().instance().set(&DataKey::K2(symbol_short!("LDef"), cid, ten), &true); }
