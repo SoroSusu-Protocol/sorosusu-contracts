@@ -54,6 +54,14 @@ pub enum DataKey {
     ReliabilityIndex(Address),
     // New: User activity tracking for RI calculation
     UserActivity(Address),
+    // New: Credit tier configuration for RI-based access control
+    CreditTierConfig,
+    // New: User's current credit limit based on RI
+    UserCreditLimit(Address),
+    // New: Insurance claim proposals
+    InsuranceProposal(u64),
+    // New: Circle-specific reserve vaults
+    CircleReserve(u64),
 }
 
 #[contracttype]
@@ -239,6 +247,56 @@ pub struct ReliabilityIndex {
     pub decay_rate: u32, // basis points per day of inactivity
 }
 
+// New: Credit tier configuration for RI-based access control
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CreditTierConfig {
+    pub tier_1_max: i128,   // RI 0-200: Max contribution limit
+    pub tier_2_max: i128,   // RI 201-400: Max contribution limit
+    pub tier_3_max: i128,   // RI 401-600: Max contribution limit
+    pub tier_4_max: i128,   // RI 601-800: Max contribution limit
+    pub tier_5_max: i128,   // RI 801-1000: Max contribution limit
+}
+
+// New: User credit limit structure
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct UserCreditLimit {
+    pub user: Address,
+    pub max_contribution: i128,
+    pub last_updated: u64,
+    pub current_ri: u32,
+}
+
+// New: Circle reserve configuration
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CircleReserveConfig {
+    pub circle_id: u64,
+    pub reserve_percentage: u32, // 1-3% in basis points (100-300)
+    pub total_reserve: i128,
+    pub is_active: bool,
+}
+
+// New: Insurance claim proposal structure
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct InsuranceProposal {
+    pub proposal_id: u64,
+    pub circle_id: u64,
+    pub defaulting_member: Address,
+    pub victim_recipient: Address,
+    pub claim_amount: i128,
+    pub proposer: Address,
+    pub created_at: u64,
+    pub voting_deadline: u64,
+    pub yes_votes: u32,
+    pub no_votes: u32,
+    pub total_members: u32,
+    pub is_executed: bool,
+    pub reason: String,
+}
+
 // --- CONTRACT TRAIT ---
 
 pub trait SoroSusuTrait {
@@ -315,6 +373,19 @@ pub trait SoroSusuTrait {
     fn update_user_activity(env: Env, user: Address, circle_id: u64, contribution_amount: i128, is_timely: bool);
     fn apply_ri_decay(env: Env, user: Address);
     fn get_reliability_index(env: Env, user: Address) -> ReliabilityIndex;
+    
+    // Credit-Limit Scaling based on Historical RI (#269)
+    fn initialize_credit_tiers(env: Env, admin: Address);
+    fn get_user_credit_limit(env: Env, user: Address) -> i128;
+    fn update_user_credit_limit(env: Env, user: Address);
+    fn can_join_pool(env: Env, user: Address, pool_max_contribution: i128) -> bool;
+    
+    // Emergency-Bailout Fund Logic (Susu Insurance) (#267)
+    fn configure_circle_reserve(env: Env, admin: Address, circle_id: u64, reserve_percentage: u32);
+    fn create_insurance_proposal(env: Env, proposer: Address, circle_id: u64, defaulting_member: Address, victim_recipient: Address, claim_amount: i128, reason: String) -> u64;
+    fn vote_on_insurance(env: Env, voter: Address, proposal_id: u64, vote: bool);
+    fn execute_insurance_claim(env: Env, executor: Address, proposal_id: u64);
+    fn get_circle_reserve_balance(env: Env, circle_id: u64) -> i128;
 }
 
 // --- IMPLEMENTATION ---
@@ -404,7 +475,13 @@ impl SoroSusuTrait for SoroSusu {
             }
         }
 
-        // 6. NEW: Check for staking requirement for high-value rounds (>5,000 XLM)
+        // 6. NEW: Credit-Limit Scaling based on Historical RI (#269)
+        // Check if user can join based on their RI-defined credit limit
+        if !Self::can_join_pool(env.clone(), user.clone(), circle.contribution_amount) {
+            panic!("User's Reliability Index is insufficient for this pool's contribution amount");
+        }
+
+        // 7. NEW: Check for staking requirement for high-value rounds (>5,000 XLM)
         if circle.contribution_amount >= 5000_0000000 { // 5,000 XLM (assuming 7 decimals)
             let collateral_key = DataKey::StakedCollateral(circle_id, user.clone());
             let collateral: StakedCollateral = env.storage().instance().get(&collateral_key)
@@ -415,7 +492,7 @@ impl SoroSusuTrait for SoroSusu {
             }
         }
 
-        // 7. Create and store the new member
+        // 8. Create and store the new member
         let new_member = Member {
             address: user.clone(),
             has_contributed: false,
@@ -423,11 +500,11 @@ impl SoroSusuTrait for SoroSusu {
             last_contribution_time: 0,
         };
         
-        // 8. Store the member and update circle count
+        // 9. Store the member and update circle count
         env.storage().instance().set(&member_key, &new_member);
         circle.member_count += 1;
         
-        // 9. Save the updated circle back to storage
+        // 10. Save the updated circle back to storage
         env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
     }
 
@@ -465,12 +542,36 @@ impl SoroSusuTrait for SoroSusu {
             env.storage().instance().set(&DataKey::GroupReserve, &reserve_balance);
         }
 
-        // 6. Transfer the full amount from user
+        // 6. NEW: Emergency-Bailout Fund Logic - Calculate and divert reserve percentage
+        let circle_reserve_config: CircleReserveConfig = env.storage().instance().get(&DataKey::CircleReserve(circle_id))
+            .unwrap_or_else(|| CircleReserveConfig {
+                circle_id,
+                reserve_percentage: 200, // Default 2%
+                total_reserve: 0,
+                is_active: true,
+            });
+
+        let reserve_amount = if circle_reserve_config.is_active {
+            (contribution_amount * circle_reserve_config.reserve_percentage as i128) / 10000
+        } else {
+            0
+        };
+
+        let net_contribution = contribution_amount - reserve_amount;
+
+        // 7. Transfer the full amount from user
         client.transfer(
             &user, 
             &env.current_contract_address(), 
             &contribution_amount
         );
+
+        // 8. Update circle reserve if active
+        if circle_reserve_config.is_active && reserve_amount > 0 {
+            let mut updated_config = circle_reserve_config.clone();
+            updated_config.total_reserve += reserve_amount;
+            env.storage().instance().set(&DataKey::CircleReserve(circle_id), &updated_config);
+        }
 
         // 7. Store private contribution amount if privacy is enabled
         if privacy_masked {
@@ -497,19 +598,24 @@ impl SoroSusuTrait for SoroSusu {
         // 11. Mark as Paid in the old format for backward compatibility
         env.storage().instance().set(&DataKey::Deposit(circle_id, user.clone()), &true);
 
-        // 12. NEW: Update user activity for reliability index calculation
-        Self::update_user_activity(env.clone(), user.clone(), circle_id, contribution_amount, is_timely);
+        // 13. NEW: Update user activity for reliability index calculation
+        Self::update_user_activity(env.clone(), user.clone(), circle_id, net_contribution, is_timely);
 
-        // 13. Emit contribution event (masked if privacy is enabled)
+        // 14. Emit contribution event (masked if privacy is enabled)
         if privacy_masked {
             let event = ContributionMaskedEvent {
-                member_id: user,
+                member_id: user.clone(),
                 success: true,
             };
             env.events().publish((Symbol::new(&env, "contribution_masked"),), event);
         } else {
             // Emit regular contribution event with amount
-            env.events().publish((Symbol::new(&env, "contribution"),), (user, contribution_amount));
+            env.events().publish((Symbol::new(&env, "contribution"),), (user.clone(), net_contribution));
+        }
+
+        // 15. Emit reserve contribution event if applicable
+        if circle_reserve_config.is_active && reserve_amount > 0 {
+            env.events().publish((Symbol::new(&env, "reserve_contribution"),), (circle_id, user, reserve_amount));
         }
     }
 
@@ -1556,5 +1662,296 @@ impl SoroSusuTrait for SoroSusu {
                 last_updated: 0,
                 decay_rate: 5,
             })
+    }
+
+    // Credit-Limit Scaling based on Historical RI (#269)
+    fn initialize_credit_tiers(env: Env, admin: Address) {
+        // 1. Authorization: The admin must sign this transaction
+        admin.require_auth();
+
+        // 2. Verify the caller is the admin
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("No admin set"));
+        
+        if stored_admin != admin {
+            panic!("Caller is not the admin");
+        }
+
+        // 3. Initialize credit tier configuration
+        let credit_tiers = CreditTierConfig {
+            tier_1_max: 100_0000000,    // 100 XLM for RI 0-200
+            tier_2_max: 500_0000000,    // 500 XLM for RI 201-400
+            tier_3_max: 2000_0000000,   // 2,000 XLM for RI 401-600
+            tier_4_max: 5000_0000000,   // 5,000 XLM for RI 601-800
+            tier_5_max: 10000_0000000,  // 10,000 XLM for RI 801-1000
+        };
+
+        // 4. Store the credit tier configuration
+        env.storage().instance().set(&DataKey::CreditTierConfig, &credit_tiers);
+    }
+
+    fn get_user_credit_limit(env: Env, user: Address) -> i128 {
+        // 1. Get user's reliability index
+        let ri = Self::get_reliability_index(env.clone(), user.clone());
+        
+        // 2. Get credit tier configuration
+        let credit_tiers: CreditTierConfig = env.storage().instance().get(&DataKey::CreditTierConfig)
+            .unwrap_or_else(|| panic!("Credit tiers not initialized"));
+
+        // 3. Determine credit limit based on RI score
+        let credit_limit = match ri.score {
+            0..=200 => credit_tiers.tier_1_max,
+            201..=400 => credit_tiers.tier_2_max,
+            401..=600 => credit_tiers.tier_3_max,
+            601..=800 => credit_tiers.tier_4_max,
+            801..=1000 => credit_tiers.tier_5_max,
+            _ => credit_tiers.tier_1_max, // Default to lowest tier for invalid scores
+        };
+
+        credit_limit
+    }
+
+    fn update_user_credit_limit(env: Env, user: Address) {
+        // 1. Get current RI and calculate new credit limit
+        let ri = Self::get_reliability_index(env.clone(), user.clone());
+        let new_credit_limit = Self::get_user_credit_limit(env.clone(), user.clone());
+        
+        // 2. Create user credit limit record
+        let current_time = env.ledger().timestamp();
+        let user_credit_limit = UserCreditLimit {
+            user: user.clone(),
+            max_contribution: new_credit_limit,
+            last_updated: current_time,
+            current_ri: ri.score,
+        };
+
+        // 3. Store the updated credit limit
+        env.storage().instance().set(&DataKey::UserCreditLimit(user), &user_credit_limit);
+    }
+
+    fn can_join_pool(env: Env, user: Address, pool_max_contribution: i128) -> bool {
+        // 1. Get user's current credit limit
+        let user_credit_limit = Self::get_user_credit_limit(env.clone(), user.clone());
+        
+        // 2. Check if pool's contribution amount exceeds user's credit limit
+        if pool_max_contribution > user_credit_limit {
+            return false;
+        }
+
+        // 3. Update user's credit limit (in case RI has changed)
+        Self::update_user_credit_limit(env.clone(), user.clone());
+
+        // 4. Double-check with updated credit limit
+        let updated_credit_limit = Self::get_user_credit_limit(env, user);
+        pool_max_contribution <= updated_credit_limit
+    }
+
+    // Emergency-Bailout Fund Logic (Susu Insurance) (#267)
+    fn configure_circle_reserve(env: Env, admin: Address, circle_id: u64, reserve_percentage: u32) {
+        // 1. Authorization: The admin must sign this transaction
+        admin.require_auth();
+
+        // 2. Verify the caller is the admin
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("No admin set"));
+        
+        if stored_admin != admin {
+            panic!("Caller is not the admin");
+        }
+
+        // 3. Validate reserve percentage (1-3% = 100-300 basis points)
+        if reserve_percentage < 100 || reserve_percentage > 300 {
+            panic!("Reserve percentage must be between 1% and 3% (100-300 basis points)");
+        }
+
+        // 4. Verify the circle exists
+        let _circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))
+            .unwrap_or_else(|| panic!("Circle does not exist"));
+
+        // 5. Get existing configuration or create new
+        let existing_config: Option<CircleReserveConfig> = env.storage().instance().get(&DataKey::CircleReserve(circle_id));
+        
+        let reserve_config = CircleReserveConfig {
+            circle_id,
+            reserve_percentage,
+            total_reserve: existing_config.map(|c| c.total_reserve).unwrap_or(0),
+            is_active: true,
+        };
+
+        // 6. Store the updated configuration
+        env.storage().instance().set(&DataKey::CircleReserve(circle_id), &reserve_config);
+
+        // 7. Emit configuration event
+        env.events().publish((Symbol::new(&env, "reserve_configured"),), (circle_id, reserve_percentage));
+    }
+
+    fn create_insurance_proposal(env: Env, proposer: Address, circle_id: u64, defaulting_member: Address, victim_recipient: Address, claim_amount: i128, reason: String) -> u64 {
+        // 1. Authorization: The proposer must sign this transaction
+        proposer.require_auth();
+
+        // 2. Verify the circle exists and proposer is a member
+        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))
+            .unwrap_or_else(|| panic!("Circle does not exist"));
+        
+        let member_key = DataKey::Member(proposer.clone());
+        let _member: Member = env.storage().instance().get(&member_key)
+            .unwrap_or_else(|| panic!("User is not a member of this circle"));
+
+        // 3. Verify circle reserve is active and has sufficient funds
+        let reserve_config: CircleReserveConfig = env.storage().instance().get(&DataKey::CircleReserve(circle_id))
+            .unwrap_or_else(|| panic!("Circle reserve not configured"));
+        
+        if !reserve_config.is_active {
+            panic!("Circle reserve is not active");
+        }
+        
+        if reserve_config.total_reserve < claim_amount {
+            panic!("Insufficient funds in circle reserve");
+        }
+
+        // 4. Get proposal ID (increment counter)
+        let mut proposal_count: u64 = env.storage().instance().get(&DataKey::CircleCount).unwrap_or(0);
+        proposal_count += 1;
+
+        // 5. Create the insurance proposal
+        let current_time = env.ledger().timestamp();
+        let voting_deadline = current_time + (3 * 24 * 3600); // 3 days voting period
+
+        let proposal = InsuranceProposal {
+            proposal_id: proposal_count,
+            circle_id,
+            defaulting_member: defaulting_member.clone(),
+            victim_recipient: victim_recipient.clone(),
+            claim_amount,
+            proposer: proposer.clone(),
+            created_at: current_time,
+            voting_deadline,
+            yes_votes: 0,
+            no_votes: 0,
+            total_members: circle.member_count,
+            is_executed: false,
+            reason,
+        };
+
+        // 6. Store the proposal
+        env.storage().instance().set(&DataKey::InsuranceProposal(proposal_count), &proposal);
+
+        // 7. Emit proposal creation event
+        env.events().publish((Symbol::new(&env, "insurance_proposal_created"),), (proposal_count, circle_id, defaulting_member, victim_recipient, claim_amount));
+
+        proposal_count
+    }
+
+    fn vote_on_insurance(env: Env, voter: Address, proposal_id: u64, vote: bool) {
+        // 1. Authorization: The voter must sign this transaction
+        voter.require_auth();
+
+        // 2. Get the insurance proposal
+        let mut proposal: InsuranceProposal = env.storage().instance().get(&DataKey::InsuranceProposal(proposal_id))
+            .unwrap_or_else(|| panic!("Insurance proposal does not exist"));
+
+        // 3. Check if voting is still open
+        let current_time = env.ledger().timestamp();
+        if current_time > proposal.voting_deadline {
+            panic!("Voting period has ended");
+        }
+
+        // 4. Check if user is a member of the circle
+        let member_key = DataKey::Member(voter.clone());
+        let _member: Member = env.storage().instance().get(&member_key)
+            .unwrap_or_else(|| panic!("User is not a member of this circle"));
+
+        // 5. Check if user has already voted
+        let vote_key = DataKey::Vote(proposal_id, voter.clone());
+        if env.storage().instance().has(&vote_key) {
+            panic!("User has already voted on this proposal");
+        }
+
+        // 6. Record the vote
+        let vote_record = VoteCast {
+            proposal_id,
+            voter: voter.clone(),
+            vote,
+            voting_power: 1, // Each member gets equal voting power
+        };
+        env.storage().instance().set(&vote_key, &vote_record);
+
+        // 7. Update proposal vote counts
+        if vote {
+            proposal.yes_votes += 1;
+        } else {
+            proposal.no_votes += 1;
+        }
+
+        // 8. Save updated proposal
+        env.storage().instance().set(&DataKey::InsuranceProposal(proposal_id), &proposal);
+
+        // 9. Emit vote event
+        env.events().publish((Symbol::new(&env, "insurance_vote_cast"),), (proposal_id, voter, vote));
+    }
+
+    fn execute_insurance_claim(env: Env, executor: Address, proposal_id: u64) {
+        // 1. Authorization: The executor must sign this transaction
+        executor.require_auth();
+
+        // 2. Get the insurance proposal
+        let mut proposal: InsuranceProposal = env.storage().instance().get(&DataKey::InsuranceProposal(proposal_id))
+            .unwrap_or_else(|| panic!("Insurance proposal does not exist"));
+
+        // 3. Check if proposal has already been executed
+        if proposal.is_executed {
+            panic!("Proposal has already been executed");
+        }
+
+        // 4. Check if voting period has ended
+        let current_time = env.ledger().timestamp();
+        if current_time <= proposal.voting_deadline {
+            panic!("Voting period has not ended yet");
+        }
+
+        // 5. Check if proposal passed (requires 75% majority)
+        let required_votes = (proposal.total_members * 75) / 100; // 75% threshold
+        if proposal.yes_votes < required_votes {
+            panic!("Insufficient votes for insurance claim (75% required)");
+        }
+
+        // 6. Get circle and reserve configuration
+        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(proposal.circle_id))
+            .unwrap_or_else(|| panic!("Circle does not exist"));
+        
+        let mut reserve_config: CircleReserveConfig = env.storage().instance().get(&DataKey::CircleReserve(proposal.circle_id))
+            .unwrap_or_else(|| panic!("Circle reserve not configured"));
+
+        // 7. Check if sufficient reserve funds are still available
+        if reserve_config.total_reserve < proposal.claim_amount {
+            panic!("Insufficient funds in circle reserve for claim");
+        }
+
+        // 8. Transfer insurance claim to victim recipient
+        let client = token::Client::new(&env, &circle.token);
+        client.transfer(&env.current_contract_address(), &proposal.victim_recipient, &proposal.claim_amount);
+
+        // 9. Update reserve balance
+        reserve_config.total_reserve -= proposal.claim_amount;
+        env.storage().instance().set(&DataKey::CircleReserve(proposal.circle_id), &reserve_config);
+
+        // 10. Mark proposal as executed
+        proposal.is_executed = true;
+        env.storage().instance().set(&DataKey::InsuranceProposal(proposal_id), &proposal);
+
+        // 11. Emit execution event
+        env.events().publish((Symbol::new(&env, "insurance_claim_executed"),), (proposal_id, proposal.circle_id, proposal.victim_recipient, proposal.claim_amount));
+    }
+
+    fn get_circle_reserve_balance(env: Env, circle_id: u64) -> i128 {
+        let reserve_config: CircleReserveConfig = env.storage().instance().get(&DataKey::CircleReserve(circle_id))
+            .unwrap_or_else(|| CircleReserveConfig {
+                circle_id,
+                reserve_percentage: 200,
+                total_reserve: 0,
+                is_active: false,
+            });
+        
+        reserve_config.total_reserve
     }
 }
