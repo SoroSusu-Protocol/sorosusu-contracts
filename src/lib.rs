@@ -48,6 +48,8 @@ pub enum DataKey {
 #[contracttype] #[derive(Clone)] pub struct BatchPayoutRecord { pub batch_payout_id: u64, pub circle_id: u64, pub round_number: u32, pub total_winners: u32, pub total_pot: i128, pub organizer_fee: i128, pub net_payout_per_winner: i128, pub dust_amount: i128, pub winners: Vec<Address>, pub payout_timestamp: u64 }
 #[contracttype] #[derive(Clone)] pub struct IndividualPayoutClaim { pub recipient: Address, pub circle_id: u64, pub round_number: u32, pub amount_claimed: i128, pub batch_payout_id: u64, pub claim_timestamp: u64 }
 #[contracttype] #[derive(Clone)] pub struct AssetWeight { pub token: Address, pub weight_bps: u32 }
+#[contracttype] #[derive(Clone)] pub struct UserReputationMetrics { pub reliability_score: u32, pub social_capital_score: u32, pub total_cycles: u32, pub perfect_cycles: u32, pub total_volume_saved: i128, pub last_activity: u64, pub last_decay: u64, pub on_time_contributions: u32, pub total_contributions: u32 }
+#[contracttype] #[derive(Clone)] pub struct ReputationData { pub user_address: Address, pub susu_score: u32, pub reliability_score: u32, pub total_contributions: u32, pub on_time_rate: u32, pub volume_saved: i128, pub social_capital: u32, pub last_updated: u64, pub is_active: bool }
 #[contracttype] #[derive(Clone)] pub struct DissolutionProposal { pub initiator: Address, pub circle_id: u64, pub status: DissolutionStatus, pub approve_votes: u32, pub reject_votes: u32, pub dissolution_timestamp: Option<u64> }
 #[contracttype] #[derive(Clone)] pub struct AnchorInfo { pub anchor_address: Address, pub anchor_name: String, pub sep_version: String, pub authorization_level: u32, pub compliance_level: u32, pub is_active: bool, pub registration_timestamp: u64, pub last_activity: u64, pub supported_countries: Vec<String>, pub max_deposit_amount: i128, pub daily_deposit_limit: i128 }
 #[contracttype] #[derive(Clone)] pub struct AnchorDeposit { pub id: u64, pub anchor_address: Address, pub beneficiary_user: Address, pub circle_id: u64, pub amount: i128, pub deposit_memo: String, pub fiat_reference: String, pub sep_type: String, pub timestamp: u64, pub processed: bool, pub compliance_verified: bool }
@@ -172,6 +174,7 @@ pub trait SoroSusuTrait {
     fn update_milestone_progress(env: Env, adm: Address, id: u128, new_phase: u32, impact: i128) -> ImpactCertificateMetadata;
     fn get_progress_bar_data(env: Env, id: u128) -> Option<Map<Symbol, String>>;
     fn set_sanctions_oracle(env: Env, adm: Address, oracle: Address);
+    fn set_pop_oracle(env: Env, adm: Address, oracle: Address);
     fn reveal_next_winner(env: Env, cid: u64) -> Address;
     fn get_frozen_payout(env: Env, cid: u64) -> (i128, Option<Address>);
     fn review_frozen_payout(env: Env, adm: Address, cid: u64, release: bool);
@@ -204,6 +207,10 @@ pub trait SoroSusuTrait {
     fn get_debt_restructuring(env: Env, cid: u64, rid: u64) -> Option<InternalDebtRestructuring>;
     fn make_restructuring_payment(env: Env, u: Address, cid: u64, rid: u64, amt: i128);
     fn complete_debt_restructuring(env: Env, adm: Address, cid: u64, rid: u64);
+    fn get_reputation(env: Env, user: Address) -> ReputationData;
+    fn update_reputation_on_deposit(env: Env, user: Address, was_on_time: bool);
+    fn apply_inactivity_decay(env: Env, user: Address);
+    fn calculate_fee_discount(env: Env, user: Address) -> u32;
 }
 
 #[contractclient(name = "InterSusuLendingMarketClient")]
@@ -332,7 +339,19 @@ impl SoroSusuTrait for SoroSusu {
         id
     }
     fn join_circle(env: Env, u: Address, cid: u64) { u.require_auth(); let mut c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); if env.storage().instance().has(&DataKey::K2(symbol_short!("M"), cid, u.clone())) { return; } if c.member_count >= c.max_members { panic!("Circle full"); } c.member_count += 1; c.member_addresses.push_back(u.clone()); env.storage().instance().set(&DataKey::K1(symbol_short!("C"), cid), &c); env.storage().instance().set(&DataKey::K2(symbol_short!("M"), cid, u.clone()), &Member { address: u.clone(), index: c.member_count - 1, contribution_count: 0, last_contribution_time: 0, status: MemberStatus::Active, tier_multiplier: 1, referrer: None, buddy: None, has_contributed_current_round: false, total_contributions: 0 }); env.storage().instance().set(&DataKey::K1A(symbol_short!("Mem"), u.clone()), &Member { address: u.clone(), index: 0, contribution_count: 0, last_contribution_time: 0, status: MemberStatus::Active, tier_multiplier: 1, referrer: None, buddy: None, has_contributed_current_round: false, total_contributions: 0 }); Self::record_audit_logic(&env, u, AuditAction::AdminAction, cid); }
-    fn deposit(env: Env, u: Address, cid: u64, _r: u32) { u.require_auth(); let mut m: Member = env.storage().instance().get(&DataKey::K2(symbol_short!("M"), cid, u.clone())).unwrap(); let c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); token::Client::new(&env, &c.token).transfer(&u, &env.current_contract_address(), &c.contribution_amount); m.contribution_count += 1; m.total_contributions += c.contribution_amount; m.has_contributed_current_round = true; env.storage().instance().set(&DataKey::K2(symbol_short!("M"), cid, u.clone()), &m); env.storage().instance().set(&DataKey::K1A(symbol_short!("Mem"), u), &m); }
+    fn deposit(env: Env, u: Address, cid: u64, _r: u32) { u.require_auth(); let mut m: Member = env.storage().instance().get(&DataKey::K2(symbol_short!("M"), cid, u.clone())).unwrap(); let c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); 
+        
+        // Calculate fee with RI discount
+        let base_fee_bps = env.storage().instance().get(&DataKey::K(symbol_short!("Fee"))).unwrap_or(100); // 1% default
+        let discount_bps = Self::calculate_fee_discount(env.clone(), u.clone());
+        let effective_fee_bps = base_fee_bps.saturating_sub(discount_bps);
+        let fee_amount = (c.contribution_amount * effective_fee_bps as i128) / 10000;
+        
+        // Transfer contribution + fee
+        let total_amount = c.contribution_amount + fee_amount;
+        token::Client::new(&env, &c.token).transfer(&u, &env.current_contract_address(), &total_amount);
+        
+        m.contribution_count += 1; m.total_contributions += c.contribution_amount; m.has_contributed_current_round = true; m.last_contribution_time = env.ledger().timestamp(); env.storage().instance().set(&DataKey::K2(symbol_short!("M"), cid, u.clone()), &m); env.storage().instance().set(&DataKey::K1A(symbol_short!("Mem"), u.clone()), &m); let was_on_time = env.ledger().timestamp() <= c.deadline_timestamp; Self::apply_inactivity_decay(env.clone(), u.clone()); Self::update_reputation_on_deposit(env, u, was_on_time); }
     fn deposit_basket(env: Env, u: Address, cid: u64) {
         u.require_auth();
         let c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap();
@@ -377,9 +396,26 @@ impl SoroSusuTrait for SoroSusu {
             let mut rs = Self::get_social_capital(env.clone(), req.clone(), cid);
             rs.leniency_received += 1; rs.trust_score += 5;
             env.storage().instance().set(&DataKey::K2(symbol_short!("Cap"), cid, req.clone()), &rs);
+            
+            // Update requester's reputation
+            let mut req_metrics = env.storage().instance().get(&DataKey::K1A(symbol_short!("URep"), req.clone())).unwrap_or(UserReputationMetrics {
+                reliability_score: 5000, social_capital_score: 5000, total_cycles: 0, perfect_cycles: 0, total_volume_saved: 0, last_activity: env.ledger().timestamp(), last_decay: env.ledger().timestamp(), on_time_contributions: 0, total_contributions: 0,
+            });
+            req_metrics.social_capital_score = (req_metrics.social_capital_score + 25).min(10000);
+            req_metrics.last_activity = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::K1A(symbol_short!("URep"), req), &req_metrics);
+            
             let mut vs = Self::get_social_capital(env.clone(), voter.clone(), cid);
             vs.leniency_given += 1; vs.voting_participation += 1;
-            env.storage().instance().set(&DataKey::K2(symbol_short!("Cap"), cid, voter), &vs);
+            env.storage().instance().set(&DataKey::K2(symbol_short!("Cap"), cid, voter.clone()), &vs);
+            
+            // Update voter's reputation
+            let mut voter_metrics = env.storage().instance().get(&DataKey::K1A(symbol_short!("URep"), voter.clone())).unwrap_or(UserReputationMetrics {
+                reliability_score: 5000, social_capital_score: 5000, total_cycles: 0, perfect_cycles: 0, total_volume_saved: 0, last_activity: env.ledger().timestamp(), last_decay: env.ledger().timestamp(), on_time_contributions: 0, total_contributions: 0,
+            });
+            voter_metrics.social_capital_score = (voter_metrics.social_capital_score + 50).min(10000);
+            voter_metrics.last_activity = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::K1A(symbol_short!("URep"), voter), &voter_metrics);
         }
         env.storage().instance().set(&DataKey::K2(symbol_short!("LenR"), cid, req), &r);
     }
@@ -401,6 +437,14 @@ impl SoroSusuTrait for SoroSusu {
             QuadraticVoteChoice::Abstain => {}
         }
         env.storage().instance().set(&DataKey::K1(symbol_short!("Prop"), pid), &p);
+        
+        // Update voter's reputation for governance participation
+        let mut voter_metrics = env.storage().instance().get(&DataKey::K1A(symbol_short!("URep"), voter.clone())).unwrap_or(UserReputationMetrics {
+            reliability_score: 5000, social_capital_score: 5000, total_cycles: 0, perfect_cycles: 0, total_volume_saved: 0, last_activity: env.ledger().timestamp(), last_decay: env.ledger().timestamp(), on_time_contributions: 0, total_contributions: 0,
+        });
+        voter_metrics.social_capital_score = (voter_metrics.social_capital_score + 10).min(10000);
+        voter_metrics.last_activity = env.ledger().timestamp();
+        env.storage().instance().set(&DataKey::K1A(symbol_short!("URep"), voter), &voter_metrics);
     }
     fn execute_proposal(env: Env, caller: Address, pid: u64) {
         caller.require_auth();
@@ -443,6 +487,16 @@ impl SoroSusuTrait for SoroSusu {
         }
 
         token::Client::new(&env, &c.token).transfer(&env.current_contract_address(), &recipient, &(c.contribution_amount * (c.member_count as i128)));
+        
+        // Update recipient's volume saved for reputation
+        let payout_amount = c.contribution_amount * (c.member_count as i128);
+        let mut metrics = env.storage().instance().get(&DataKey::K1A(symbol_short!("URep"), recipient.clone())).unwrap_or(UserReputationMetrics {
+            reliability_score: 5000, social_capital_score: 5000, total_cycles: 0, perfect_cycles: 0, total_volume_saved: 0, last_activity: env.ledger().timestamp(), last_decay: env.ledger().timestamp(), on_time_contributions: 0, total_contributions: 0,
+        });
+        metrics.total_volume_saved += payout_amount;
+        metrics.last_activity = env.ledger().timestamp();
+        env.storage().instance().set(&DataKey::K1A(symbol_short!("URep"), recipient), &metrics);
+        
         c.is_active = false;
         env.storage().instance().set(&DataKey::K1(symbol_short!("C"), cid), &c);
     }
@@ -550,6 +604,7 @@ impl SoroSusuTrait for SoroSusu {
     fn update_milestone_progress(_env: Env, adm: Address, id: u128, new_phase: u32, impact: i128) -> ImpactCertificateMetadata { adm.require_auth(); ImpactCertificateMetadata { id, grantee: adm, total_phases: new_phase + 1, phases_completed: new_phase, impact_score: impact as u32, on_chain_badge: symbol_short!("Impact"), milestone_status: MilestoneProgress::InProgress } }
     fn get_progress_bar_data(env: Env, _id: u128) -> Option<Map<Symbol, String>> { let mut m = Map::new(&env); m.set(symbol_short!("progress"), String::from_str(&env, "50%")); Some(m) }
     fn set_sanctions_oracle(env: Env, adm: Address, oracle: Address) { adm.require_auth(); env.storage().instance().set(&DataKey::K(symbol_short!("Oracle")), &oracle); }
+    fn set_pop_oracle(env: Env, adm: Address, oracle: Address) { adm.require_auth(); env.storage().instance().set(&DataKey::K(symbol_short!("PoP")), &oracle); }
     fn reveal_next_winner(env: Env, cid: u64) -> Address { let c: CircleInfo = env.storage().instance().get(&DataKey::K1(symbol_short!("C"), cid)).unwrap(); c.member_addresses.get(c.current_recipient_index).unwrap() }
     fn get_frozen_payout(env: Env, cid: u64) -> (i128, Option<Address>) { env.storage().instance().get(&DataKey::K1(symbol_short!("Froze"), cid)).unwrap_or((0, None)) }
     fn review_frozen_payout(env: Env, adm: Address, cid: u64, release: bool) {
@@ -594,4 +649,71 @@ impl SoroSusuTrait for SoroSusu {
     fn get_debt_restructuring(_env: Env, _cid: u64, _rid: u64) -> Option<InternalDebtRestructuring> { None }
     fn make_restructuring_payment(_env: Env, u: Address, _cid: u64, _rid: u64, _amt: i128) { u.require_auth(); }
     fn complete_debt_restructuring(_env: Env, adm: Address, _cid: u64, _rid: u64) { adm.require_auth(); }
+    fn get_reputation(env: Env, user: Address) -> ReputationData {
+        let metrics = env.storage().instance().get(&DataKey::K1A(symbol_short!("URep"), user.clone())).unwrap_or(UserReputationMetrics {
+            reliability_score: 5000, social_capital_score: 5000, total_cycles: 0, perfect_cycles: 0, total_volume_saved: 0, last_activity: env.ledger().timestamp(), last_decay: env.ledger().timestamp(), on_time_contributions: 0, total_contributions: 0,
+        });
+        let susu_score = (metrics.reliability_score + metrics.social_capital_score) / 2;
+        let on_time_rate = if metrics.total_contributions > 0 { (metrics.on_time_contributions * 10000) / metrics.total_contributions } else { 5000 };
+        ReputationData {
+            user_address: user,
+            susu_score,
+            reliability_score: metrics.reliability_score,
+            total_contributions: metrics.total_contributions,
+            on_time_rate,
+            volume_saved: metrics.total_volume_saved,
+            social_capital: metrics.social_capital_score,
+            last_updated: metrics.last_activity,
+            is_active: env.ledger().timestamp() - metrics.last_activity < 15552000, // 6 months
+        }
+    }
+    fn update_reputation_on_deposit(env: Env, user: Address, was_on_time: bool) {
+        // Check Proof of Personhood if oracle is set
+        if let Some(pop_oracle) = env.storage().instance().get::<DataKey, Address>(&DataKey::K(symbol_short!("PoP"))) {
+            let is_verified: bool = env.invoke_contract(&pop_oracle, &Symbol::new(&env, "is_verified"), Vec::from_array(&env, [user.clone().into_val(&env)]));
+            if !is_verified {
+                return; // Don't update reputation if not verified
+            }
+        }
+        
+        let mut metrics = env.storage().instance().get(&DataKey::K1A(symbol_short!("URep"), user.clone())).unwrap_or(UserReputationMetrics {
+            reliability_score: 5000, social_capital_score: 5000, total_cycles: 0, perfect_cycles: 0, total_volume_saved: 0, last_activity: env.ledger().timestamp(), last_decay: env.ledger().timestamp(), on_time_contributions: 0, total_contributions: 0,
+        });
+        metrics.total_contributions += 1;
+        if was_on_time { metrics.on_time_contributions += 1; }
+        metrics.last_activity = env.ledger().timestamp();
+        
+        // Calculate reliability score
+        let on_time_rate = if metrics.total_contributions > 0 { (metrics.on_time_contributions * 10000) / metrics.total_contributions } else { 5000 };
+        let volume_bonus = ((metrics.total_volume_saved / 1000000).min(100) * 50) as u32;
+        metrics.reliability_score = (on_time_rate as i128 + volume_bonus as i128).min(10000) as u32;
+        
+        env.storage().instance().set(&DataKey::K1A(symbol_short!("URep"), user), &metrics);
+    }
+    fn apply_inactivity_decay(env: Env, user: Address) {
+        let mut metrics = env.storage().instance().get(&DataKey::K1A(symbol_short!("URep"), user.clone())).unwrap_or(UserReputationMetrics {
+            reliability_score: 5000, social_capital_score: 5000, total_cycles: 0, perfect_cycles: 0, total_volume_saved: 0, last_activity: env.ledger().timestamp(), last_decay: env.ledger().timestamp(), on_time_contributions: 0, total_contributions: 0,
+        });
+        let months_inactive = (env.ledger().timestamp() - metrics.last_decay) / 2592000; // 30 days
+        if months_inactive > 0 && env.ledger().timestamp() - metrics.last_activity > 15552000 { // 6 months
+            let mut decay_factor = 10000u64;
+            for _ in 0..months_inactive {
+                decay_factor = (decay_factor * 95) / 100;
+            }
+            metrics.reliability_score = (metrics.reliability_score as u64 * decay_factor / 10000u64) as u32;
+            metrics.social_capital_score = (metrics.social_capital_score as u64 * decay_factor / 10000u64) as u32;
+            metrics.last_decay = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::K1A(symbol_short!("URep"), user), &metrics);
+        }
+    }
+    fn calculate_fee_discount(env: Env, user: Address) -> u32 {
+        let rep = Self::get_reputation(env, user);
+        match rep.susu_score {
+            s if s >= 9000 => 7500, // 75% discount
+            s if s >= 8000 => 5000, // 50% discount
+            s if s >= 7000 => 2500, // 25% discount
+            s if s >= 6000 => 1000, // 10% discount
+            _ => 0, // No discount
+        }
+    }
 }

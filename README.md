@@ -154,6 +154,9 @@ A specialized voting mechanism to grant extensions to members in distress, preve
 ### Credit Score Oracle
 Integrates on-chain and off-chain data to calculate a "DeFi Credit Score" based on contribution history.
 
+### Reliability Index (RI) Whitepaper
+Detailed technical documentation is available in `RELIABILITY_INDEX_WHITEPAPER.md`, explaining how the RI is calculated, how fees are discounted, and how inactivity decay and identity gating are enforced.
+
 ### Source of Funds Verification
 Produces cryptographic proof of participation, enabling users to prove the legitimacy of savings to off-chain institutions.
 
