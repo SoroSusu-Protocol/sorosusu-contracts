@@ -2,6 +2,8 @@
 use soroban_sdk::{contract, contracttype, contractimpl, Address, Env, Vec, Symbol, token, testutils::{Address as TestAddress}};
 use arbitrary::{Arbitrary, Unstructured};
 
+pub mod yield_allocation_voting;
+
 // --- DATA STRUCTURES ---
 
 #[contracttype]
@@ -68,6 +70,23 @@ pub trait SoroSusuTrait {
 
     // NEW: Issue #288
     fn deposit_with_swap(env: Env, user: Address, circle_id: u64, source_token: Address, source_amount_max: u64);
+
+    // --- Yield Allocation Voting Functions ---
+    
+    // Initialize voting session for yield distribution
+    fn initialize_yield_voting(env: Env, circle_id: u64, available_strategies: Vec<Address>) -> Result<(), u32>;
+    
+    // Cast vote for yield distribution strategy
+    fn cast_yield_vote(env: Env, voter: Address, circle_id: u64, proposed_strategies: Vec<yield_allocation_voting::DistributionStrategy>) -> Result<(), u32>;
+    
+    // Finalize voting and determine winning strategy
+    fn finalize_yield_voting(env: Env, circle_id: u64) -> Result<Vec<yield_allocation_voting::DistributionStrategy>, u32>;
+    
+    // Execute the winning distribution strategy
+    fn execute_yield_distribution(env: Env, circle_id: u64, total_yield_amount: i128) -> Result<(), u32>;
+    
+    // Finalize cycle with yield voting integration
+    fn finalize_cycle(env: Env, circle_id: u64, total_yield_amount: i128) -> Result<(), u32>;
 }
 
 // --- IMPLEMENTATION ---
@@ -316,9 +335,94 @@ impl SoroSusuTrait for SoroSusu {
         // Mark as paid
         env.storage().instance().set(&DataKey::Deposit(circle_id, user), &true);
     }
+
+    // --- Yield Allocation Voting Implementation ---
+
+    fn initialize_yield_voting(env: Env, circle_id: u64, available_strategies: Vec<Address>) -> Result<(), u32> {
+        yield_allocation_voting::initialize_voting_session(&env, circle_id, available_strategies)
+            .map_err(|e| e as u32)
+    }
+
+    fn cast_yield_vote(env: Env, voter: Address, circle_id: u64, proposed_strategies: Vec<yield_allocation_voting::DistributionStrategy>) -> Result<(), u32> {
+        yield_allocation_voting::cast_vote(&env, voter, circle_id, proposed_strategies)
+            .map_err(|e| e as u32)
+    }
+
+    fn finalize_yield_voting(env: Env, circle_id: u64) -> Result<Vec<yield_allocation_voting::DistributionStrategy>, u32> {
+        yield_allocation_voting::finalize_voting(&env, circle_id)
+            .map_err(|e| e as u32)
+    }
+
+    fn execute_yield_distribution(env: Env, circle_id: u64, total_yield_amount: i128) -> Result<(), u32> {
+        yield_allocation_voting::execute_distribution_strategy(&env, circle_id, total_yield_amount)
+            .map_err(|e| e as u32)
+    }
+
+    fn finalize_cycle(env: Env, circle_id: u64, total_yield_amount: i128) -> Result<(), u32> {
+        // Check if voting session exists and is ready to be finalized
+        let voting_session = yield_allocation_voting::get_voting_session(&env, circle_id);
+        
+        match voting_session {
+            Ok(session) => {
+                // Voting session exists, finalize it first
+                if session.is_active {
+                    let current_time = env.ledger().timestamp();
+                    if current_time > session.end_timestamp {
+                        // Voting period is over, finalize voting
+                        let winning_strategy = yield_allocation_voting::finalize_voting(&env, circle_id)
+                            .map_err(|e| e as u32)?;
+                        
+                        // Execute the winning strategy
+                        yield_allocation_voting::execute_distribution_strategy(&env, circle_id, total_yield_amount)
+                            .map_err(|e| e as u32)?;
+                        
+                        Ok(())
+                    } else {
+                        // Voting period is still active
+                        Err(404) // VotingPeriodExpired
+                    }
+                } else {
+                    // Voting already finalized, just execute distribution
+                    yield_allocation_voting::execute_distribution_strategy(&env, circle_id, total_yield_amount)
+                        .map_err(|e| e as u32)
+                }
+            }
+            Err(_) => {
+                // No voting session exists, handle yield distribution without voting
+                // This could be a default strategy or admin-controlled distribution
+                handle_default_yield_distribution(&env, circle_id, total_yield_amount)
+            }
+        }
+    }
+}
+
+// --- HELPER FUNCTIONS ---
+
+fn handle_default_yield_distribution(env: &Env, circle_id: u64, total_yield_amount: i128) -> Result<(), u32> {
+    // Default yield distribution logic when no voting session exists
+    // This could be a simple strategy like distributing equally to all members
+    // or using a predefined safe strategy
+    
+    let circle: CircleInfo = env.storage().instance()
+        .get(&DataKey::Circle(circle_id))
+        .ok_or(401)?; // Unauthorized
+    
+    // For now, we'll just keep the yield in the contract
+    // In production, this would route to a default safe strategy
+    // or distribute to members proportionally
+    
+    // Update routed amount to track yield
+    let mut routed_amount: u64 = env.storage().instance().get(&DataKey::RoutedAmount(circle_id)).unwrap_or(0);
+    routed_amount += total_yield_amount as u64;
+    env.storage().instance().set(&DataKey::RoutedAmount(circle_id), &routed_amount);
+    
+    Ok(())
 }
 
 // --- FUZZ TESTING MODULES ---
+
+#[cfg(test)]
+mod yield_allocation_voting_tests;
 
 #[cfg(test)]
 mod fuzz_tests {
