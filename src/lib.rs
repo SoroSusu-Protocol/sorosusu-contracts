@@ -3944,8 +3944,21 @@ impl SoroSusuTrait for SoroSusu {
             panic!("No new yield to distribute");
         }
 
-        if circle.is_round_finalized {
-            panic!("Round already finalized");
+        let new_yield = delegation.total_yield_earned - delegation.yield_distributed;
+        
+        // Calculate 50/50 split with dust prevention
+        // Recipient gets exact 50%, treasury gets remainder to prevent dust
+        let recipient_share = (new_yield * YIELD_DISTRIBUTION_RECIPIENT_BPS as i128) / 10000;
+        let treasury_share = new_yield - recipient_share; // Treasury gets remainder, preventing dust
+
+        // Get current round recipient
+        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+        
+        if let Some(recipient) = &circle.current_pot_recipient {
+            // Transfer to current recipient
+            let token_client = token::Client::new(&env, &circle.token);
+            // token_client.transfer(&env.current_contract_address(), recipient, &recipient_share);
         }
 
         let expected_bitmap = (1u64 << circle.member_count) - 1;
