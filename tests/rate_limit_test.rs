@@ -1,5 +1,4 @@
-#![cfg(test)]
-
+#[cfg(test)]
 #[test]
 fn test_rate_limit_enforcement() {
     // Simulate timestamps
@@ -81,3 +80,32 @@ fn test_rate_limit_constants() {
     
     assert_eq!(RATE_LIMIT_SECONDS, EXPECTED_MINUTES * 60);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
