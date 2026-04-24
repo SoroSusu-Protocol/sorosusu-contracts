@@ -1,7 +1,18 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, token, panic, Map, Vec, i128, u64, u32};
 
 mod yield_oracle_circuit_breaker;
+mod yield_strategy_trait;
+
+#[cfg(test)]
+mod yield_strategy_tests;
+
 use yield_oracle_circuit_breaker::{YieldOracleCircuitBreaker, CircuitBreakerState, HealthMetrics};
+use yield_strategy_trait::{
+    YieldStrategyTrait, YieldStrategyClient, YieldStrategyConfig, YieldInfo, 
+    DepositParams, WithdrawalParams, YieldEstimate, RegisteredStrategy, StrategyType,
+    YieldStrategyRegistryKey, validate_deposit_amount, validate_withdrawal_params, 
+    calculate_estimated_yield
+};
 
 // --- DATA STRUCTURES ---
 
@@ -57,6 +68,12 @@ pub enum DataKey {
     GasBufferConfig(u64),  // Per-circle gas buffer config
     ProtocolConfig,
     ScheduledPayoutTime(u64),
+    YieldDelegation(u64),
+    YieldVote(u64, Address),
+    YieldPoolRegistry,
+    GroupTreasury(u64),
+    YieldStrategyRegistry, // Registry for yield strategies
+    ActiveYieldStrategy(u64), // Active strategy per circle
 }
 
 // --- CONTRACT TRAIT ---
@@ -426,8 +443,8 @@ pub enum YieldPoolType {
 pub struct YieldDelegation {
     pub circle_id: u64,
     pub delegation_amount: i128,
-    pub pool_address: Address,
-    pub pool_type: YieldPoolType,
+    pub strategy_address: Address, // Abstract yield strategy contract address
+    pub strategy_type: StrategyType, // Type of yield strategy
     pub delegation_percentage: u32, // Percentage of pot to delegate
     pub created_timestamp: u64,
     pub status: YieldDelegationStatus,
@@ -440,6 +457,7 @@ pub struct YieldDelegation {
     pub total_yield_earned: i128,
     pub yield_distributed: i128,
     pub last_compound_time: u64,
+    pub strategy_info: Option<YieldInfo>, // Current strategy state
 }
 
 #[contracttype]
@@ -990,13 +1008,19 @@ pub trait SoroSusuTrait {
     fn get_late_fee_distribution(env: Env, circle_id: u64, round_number: u32) -> LateFeeDistribution;
     fn get_payment_timing_record(env: Env, circle_id: u64, round_number: u32, member: Address) -> PaymentTimingRecord;
     fn distribute_late_fees_with_priority(env: Env, circle_id: u64, round_number: u32);
-    fn propose_yield_delegation(env: Env, user: Address, circle_id: u64, delegation_percentage: u32, pool_address: Address, pool_type: YieldPoolType);
+    fn propose_yield_delegation(env: Env, user: Address, circle_id: u64, delegation_percentage: u32, strategy_address: Address, strategy_type: StrategyType);
     fn vote_yield_delegation(env: Env, user: Address, circle_id: u64, vote_choice: YieldVoteChoice);
     fn approve_yield_delegation(env: Env, circle_id: u64);
     fn execute_yield_delegation(env: Env, circle_id: u64);
     fn compound_yield(env: Env, circle_id: u64);
     fn withdraw_yield_delegation(env: Env, circle_id: u64);
     fn distribute_yield_earnings(env: Env, circle_id: u64);
+    
+    // Yield Strategy Registry Management
+    fn register_yield_strategy(env: Env, admin: Address, strategy_address: Address, strategy_type: StrategyType, config: YieldStrategyConfig);
+    fn get_registered_strategies(env: Env) -> Vec<RegisteredStrategy>;
+    fn set_default_yield_strategy(env: Env, admin: Address, strategy_address: Address);
+    fn get_default_yield_strategy(env: Env) -> Option<Address>;
 
     // Path Payment Contribution Support
     fn propose_path_payment_support(env: Env, user: Address, circle_id: u64);
@@ -3416,7 +3440,7 @@ impl SoroSusuTrait for SoroSusu {
         );
     }
 
-    fn propose_yield_delegation(env: Env, user: Address, circle_id: u64, delegation_percentage: u32, pool_address: Address, pool_type: YieldPoolType) {
+    fn propose_yield_delegation(env: Env, user: Address, circle_id: u64, delegation_percentage: u32, strategy_address: Address, strategy_type: StrategyType) {
         user.require_auth();
 
         if delegation_percentage > MAX_DELEGATION_PERCENTAGE {
@@ -3456,11 +3480,18 @@ impl SoroSusuTrait for SoroSusu {
             panic!("Delegation amount below minimum");
         }
 
+        // Validate the yield strategy before proposing
+        let strategy_client = YieldStrategyClient::new(&env, &strategy_address);
+        let strategy_info = strategy_client.get_strategy_info();
+        if !strategy_info.is_active {
+            panic!("Yield strategy is not active");
+        }
+
         let yield_delegation = YieldDelegation {
             circle_id,
             delegation_amount,
-            pool_address: pool_address.clone(),
-            pool_type: pool_type.clone(),
+            strategy_address: strategy_address.clone(),
+            strategy_type: strategy_type.clone(),
             delegation_percentage,
             created_timestamp: current_time,
             status: YieldDelegationStatus::Voting,
@@ -3473,6 +3504,7 @@ impl SoroSusuTrait for SoroSusu {
             total_yield_earned: 0,
             yield_distributed: 0,
             last_compound_time: current_time,
+            strategy_info: None,
         };
 
         env.storage().instance().set(&delegation_key, &yield_delegation);
@@ -3497,7 +3529,7 @@ impl SoroSusuTrait for SoroSusu {
 
         env.events().publish(
             (Symbol::new(&env, "YIELD_DELEGATION_PROPOSED"), circle_id, user.clone()),
-            (delegation_amount, delegation_percentage, pool_address, updated_delegation.voting_deadline),
+            (delegation_amount, delegation_percentage, strategy_address, updated_delegation.voting_deadline),
         );
     }
 
@@ -3581,25 +3613,13 @@ impl SoroSusuTrait for SoroSusu {
             panic!("Yield delegation is not approved");
         }
 
-        // Register the yield pool if not already registered
-        let pool_registry_key = DataKey::YieldPoolRegistry;
-        let mut pool_registry: Vec<Address> = env.storage().instance().get(&pool_registry_key).unwrap_or(Vec::new(&env));
+        // Get strategy info to validate it's active and get current APY
+        let strategy_client = YieldStrategyClient::new(&env, &delegation.strategy_address);
+        let strategy_info = strategy_client.get_strategy_info();
         
-        if !pool_registry.contains(&delegation.pool_address) {
-            pool_registry.push_back(delegation.pool_address.clone());
-            env.storage().instance().set(&pool_registry_key, &pool_registry);
+        if !strategy_info.is_active {
+            panic!("Yield strategy is not active");
         }
-
-        // Update pool info
-        let pool_info = YieldPoolInfo {
-            pool_address: delegation.pool_address.clone(),
-            pool_type: delegation.pool_type.clone(),
-            is_active: true,
-            total_delegated: delegation.delegation_amount,
-            apy_bps: 500, // Default 5% APY (would be fetched from pool)
-            last_updated: env.ledger().timestamp(),
-        };
-        env.storage().instance().set(&DataKey::YieldDelegation(circle_id), &pool_info);
 
         // Execute the delegation
         execute_yield_delegation_internal(&env, circle_id, &mut delegation);
@@ -3609,7 +3629,7 @@ impl SoroSusuTrait for SoroSusu {
 
         env.events().publish(
             (Symbol::new(&env, "YIELD_DELEGATION_APPROVED"), circle_id),
-            (delegation.delegation_amount, delegation.pool_address),
+            (delegation.delegation_amount, delegation.strategy_address),
         );
     }
 
@@ -3631,7 +3651,7 @@ impl SoroSusuTrait for SoroSusu {
 
         execute_yield_delegation_internal(&env, circle_id, &mut delegation);
         
-        // Register the AMM for circuit breaker monitoring
+        // Register the yield strategy for circuit breaker monitoring
         let initial_metrics = HealthMetrics {
             current_apy: 500, // Default 5% APY
             volatility_index: 1000, // Default 10% volatility
@@ -3642,13 +3662,13 @@ impl SoroSusuTrait for SoroSusu {
             is_healthy: true,
         };
         
-        YieldOracleCircuitBreaker::register_amm(&env, env.current_contract_address(), delegation.pool_address.clone(), initial_metrics);
+        YieldOracleCircuitBreaker::register_yield_strategy(&env, env.current_contract_address(), delegation.strategy_address.clone(), initial_metrics);
         
         env.storage().instance().set(&delegation_key, &delegation);
 
         env.events().publish(
             (Symbol::new(&env, "YIELD_DELEGATION_EXECUTED"), circle_id),
-            (delegation.delegation_amount, delegation.pool_address),
+            (delegation.delegation_amount, delegation.strategy_address),
         );
     }
 
@@ -3696,16 +3716,20 @@ impl SoroSusuTrait for SoroSusu {
         let final_yield = calculate_yield_from_pool(&env, &delegation, time_elapsed);
         delegation.total_yield_earned += final_yield;
 
-        // Withdraw from pool (simplified - would call actual pool contract)
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))
-            .expect("Circle not found");
-        let token_client = token::Client::new(&env, &circle.token);
+        // Withdraw from yield strategy using the abstract interface
+        let withdrawal_params = WithdrawalParams {
+            amount: delegation.delegation_amount + delegation.total_yield_earned,
+            force_withdrawal: false,
+            claim_yield_only: false,
+        };
         
-        // In real implementation, this would withdraw from the actual yield pool
-        let total_withdrawn = delegation.delegation_amount + delegation.total_yield_earned;
+        let strategy_client = YieldStrategyClient::new(&env, &delegation.strategy_address);
+        let yield_info = strategy_client.withdraw(
+            &env.current_contract_address(),
+            &withdrawal_params,
+        );
         
-        // Return funds to contract
-        // token_client.transfer(&delegation.pool_address, &env.current_contract_address(), &total_withdrawn);
+        let total_withdrawn = yield_info.current_balance;
 
         delegation.status = YieldDelegationStatus::Completed;
         delegation.end_time = Some(current_time);
@@ -3719,6 +3743,105 @@ impl SoroSusuTrait for SoroSusu {
             (Symbol::new(&env, "YIELD_DELEGATION_WITHDRAWN"), circle_id),
             (total_withdrawn, delegation.total_yield_earned),
         );
+    }
+
+    // --- YIELD STRATEGY REGISTRY MANAGEMENT ---
+
+    fn register_yield_strategy(env: Env, admin: Address, strategy_address: Address, strategy_type: StrategyType, config: YieldStrategyConfig) {
+        admin.require_auth();
+        
+        // Verify admin authorization
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized");
+        
+        if admin != stored_admin {
+            panic!("Unauthorized");
+        }
+        
+        // Validate strategy before registration
+        let strategy_client = YieldStrategyClient::new(&env, &strategy_address);
+        if !strategy_client.health_check() {
+            panic!("Strategy health check failed");
+        }
+        
+        let registry_key = DataKey::YieldStrategyRegistry;
+        let mut registry: Vec<RegisteredStrategy> = env.storage().instance()
+            .get(&registry_key)
+            .unwrap_or(Vec::new(&env));
+        
+        // Check if strategy already registered
+        for existing in registry.iter() {
+            if existing.address == strategy_address {
+                panic!("Strategy already registered");
+            }
+        }
+        
+        // Register new strategy
+        let registered_strategy = RegisteredStrategy {
+            address: strategy_address.clone(),
+            strategy_type: strategy_type.clone(),
+            config: config.clone(),
+            registration_time: env.ledger().timestamp(),
+            is_active: true,
+        };
+        
+        registry.push_back(registered_strategy);
+        env.storage().instance().set(&registry_key, &registry);
+        
+        env.events().publish(
+            (Symbol::new(&env, "YIELD_STRATEGY_REGISTERED"),),
+            (strategy_address, strategy_type),
+        );
+    }
+    
+    fn get_registered_strategies(env: Env) -> Vec<RegisteredStrategy> {
+        let registry_key = DataKey::YieldStrategyRegistry;
+        env.storage().instance()
+            .get(&registry_key)
+            .unwrap_or(Vec::new(&env))
+    }
+    
+    fn set_default_yield_strategy(env: Env, admin: Address, strategy_address: Address) {
+        admin.require_auth();
+        
+        // Verify admin authorization
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized");
+        
+        if admin != stored_admin {
+            panic!("Unauthorized");
+        }
+        
+        // Verify strategy is registered
+        let registry_key = DataKey::YieldStrategyRegistry;
+        let registry: Vec<RegisteredStrategy> = env.storage().instance()
+            .get(&registry_key)
+            .unwrap_or(Vec::new(&env));
+        
+        let mut is_registered = false;
+        for strategy in registry.iter() {
+            if strategy.address == strategy_address && strategy.is_active {
+                is_registered = true;
+                break;
+            }
+        }
+        
+        if !is_registered {
+            panic!("Strategy not found or not active");
+        }
+        
+        env.storage().instance().set(&DataKey::ActiveYieldStrategy(0), &strategy_address);
+        
+        env.events().publish(
+            (Symbol::new(&env, "DEFAULT_YIELD_STRATEGY_SET"),),
+            (strategy_address,),
+        );
+    }
+    
+    fn get_default_yield_strategy(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::ActiveYieldStrategy(0))
     }
 
     fn distribute_yield_earnings(env: Env, circle_id: u64) {
@@ -4392,25 +4515,38 @@ impl SoroSusuTrait for SoroSusu {
 fn execute_yield_delegation_internal(env: &Env, circle_id: u64, delegation: &mut YieldDelegation) {
     let current_time = env.ledger().timestamp();
     
-    // Transfer funds to yield pool
-    let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))
-        .expect("Circle not found");
-    let token_client = token::Client::new(env, &circle.token);
+    // Create deposit parameters for the yield strategy
+    let deposit_params = DepositParams {
+        amount: delegation.delegation_amount,
+        min_apy_bps: Some(100), // Minimum 1% APY
+        lockup_period: None,
+        auto_compound: true,
+    };
     
-    // In real implementation, this would call the actual yield pool contract
-    // token_client.transfer(&env.current_contract_address(), &delegation.pool_address, &delegation.delegation_amount);
+    // Execute deposit using the abstract yield strategy interface
+    let strategy_client = YieldStrategyClient::new(env, &delegation.strategy_address);
+    let yield_info = strategy_client.deposit(
+        &env.current_contract_address(),
+        &delegation.delegation_amount,
+        &deposit_params,
+    );
     
+    // Update delegation with strategy info
     delegation.status = YieldDelegationStatus::Active;
     delegation.start_time = Some(current_time);
     delegation.last_compound_time = current_time;
+    delegation.strategy_info = Some(yield_info);
 }
 
 fn calculate_yield_from_pool(env: &Env, delegation: &YieldDelegation, time_elapsed: u64) -> i128 {
-    // Simplified yield calculation - in real implementation would query actual pool
-    let apy_bps = 500; // 5% APY
-    let seconds_in_year = 365 * 24 * 60 * 60;
-    let time_fraction = time_elapsed as i128 * 10000 / seconds_in_year as i128;
-    (delegation.delegation_amount * apy_bps as i128 * time_fraction) / (10000 * 10000)
+    // Use the abstract yield strategy interface to get estimated yield
+    let strategy_client = YieldStrategyClient::new(env, &delegation.strategy_address);
+    let yield_estimate = strategy_client.get_estimated_yield(
+        &delegation.delegation_amount,
+        &time_elapsed,
+    );
+    
+    yield_estimate.estimated_yield
 }
 
     #[test]
