@@ -1,7 +1,6 @@
 #![cfg(test)]
-
-use soroban_sdk::{contract, contractimpl, Address, Env, String};
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{contract, contractimpl, Address, Env, String};
 use sorosusu_contracts::{LeniencyRequestStatus, LeniencyVote, SoroSusu, SoroSusuClient};
 
 #[contract]
@@ -25,24 +24,16 @@ fn test_request_leniency_and_approval_updates_social_capital() {
     let requester = Address::generate(&env);
     let voter = Address::generate(&env);
     let token = Address::generate(&env);
-    let nft_contract = env.register_contract(None, MockNft);
+    let _nft_contract = env.register_contract(None, MockNft);
     
     // Initialize contract
-    client.init(&admin);
+    client.init(&admin, &0);
     
     // Create circle and join members
-    let circle_id = client.create_circle(
-        &creator,
-        &100_000_0,
-        &5u32,
-        &token,
-        &86400u64,
-        &100u32,
-        &nft_contract,
-    );
+    let circle_id = client.create_circle(&creator, &100_000_0i128, &5u32, &token, &86400u64, &100i128);
 
-    client.join_circle(&requester, &circle_id, &1u32, &None);
-    client.join_circle(&voter, &circle_id, &1u32, &None);
+    client.join_circle(&requester, &circle_id);
+    client.join_circle(&voter, &circle_id);
     
     // Request leniency
     let reason = String::from_str(&env, "Medical emergency - need extra time");
@@ -76,11 +67,11 @@ fn test_cannot_vote_for_own_request() {
     let creator = Address::generate(&env);
     let requester = Address::generate(&env);
     let token = Address::generate(&env);
-    let nft_contract = env.register_contract(None, MockNft);
+    let _nft_contract = env.register_contract(None, MockNft);
 
-    client.init(&admin);
-    let circle_id = client.create_circle(&creator, &100_000_0, &5u32, &token, &86400u64, &100u32, &nft_contract);
-    client.join_circle(&requester, &circle_id, &1u32, &None);
+    client.init(&admin, &0);
+    let circle_id = client.create_circle(&creator, &100_000_0i128, &5u32, &token, &86400u64, &100i128);
+    client.join_circle(&requester, &circle_id);
 
     let reason = String::from_str(&env, "Need extra time");
     client.request_leniency(&requester, &circle_id, &reason);
