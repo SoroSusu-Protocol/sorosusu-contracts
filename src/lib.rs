@@ -29,7 +29,24 @@ pub enum DataKey {
     BatchHarvestProgress(u64),
     // New: Tracks defaulted members (CircleID, MemberAddress)
     DefaultedMember(u64, Address),
+    // Issue #324: Pending slash vault — slashed collateral held for 72 h before redistribution.
+    // Value is a PendingSlashRecord containing the amount and the timestamp when it was slashed.
+    PendingSlash(u64, Address),
 }
+
+/// Issue #324: Record stored in the PendingSlash vault.
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingSlashRecord {
+    /// Amount of collateral held in the vault (in token stroops).
+    pub amount: u64,
+    /// Ledger timestamp at which the slash was recorded.
+    pub slashed_at: u64,
+}
+
+/// 72 hours in seconds — the mandatory appeals window before slashed collateral
+/// can be redistributed to victims (Issue #324).
+pub const APPEALS_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 259_200
 
 #[contracttype]
 #[derive(Clone)]
@@ -102,6 +119,15 @@ pub trait SoroSusuTrait {
 
     // Execute default on member (after grace period expires)
     fn execute_default(env: Env, circle_id: u64, member: Address) -> Result<(), u32>;
+
+    // Issue #324: Move slashed collateral into the 72-hour pending vault.
+    // Only callable by admin. Returns Err(405) if member has no collateral to slash.
+    fn slash_collateral(env: Env, circle_id: u64, member: Address) -> Result<(), u32>;
+
+    // Issue #324: Redistribute pending-slash funds to the group reserve after the
+    // 72-hour appeals window has elapsed. Returns Err(406) if the timelock has not
+    // yet expired, giving the penalised member time to appeal to the DAO.
+    fn release_pending_slash(env: Env, circle_id: u64, member: Address) -> Result<(), u32>;
 
     // NEW: Issue #287
     fn route_to_yield(env: Env, circle_id: u64, amount: u64, pool_address: Address);
@@ -493,6 +519,90 @@ impl SoroSusuTrait for SoroSusu {
         //    - Notify other members
 
         // For now, we'll just mark them as defaulted
+        Ok(())
+    }
+
+    // Issue #324: Slash collateral — move the defaulted member's collateral into
+    // the 72-hour pending vault so they have time to appeal before redistribution.
+    fn slash_collateral(env: Env, circle_id: u64, member: Address) -> Result<(), u32> {
+        // Only admin may initiate a slash.
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(401u32)?;
+        admin.require_auth();
+
+        // Member must be marked as defaulted.
+        let defaulted_key = DataKey::DefaultedMember(circle_id, member.clone());
+        if !env.storage().instance().has(&defaulted_key) {
+            return Err(405); // Member has not defaulted — nothing to slash.
+        }
+
+        // Retrieve the member's collateral from the group reserve as a proxy.
+        // In a full implementation this would pull from a per-member collateral vault.
+        let mut reserve: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::GroupReserve)
+            .unwrap_or(0);
+
+        // Use the circle's contribution amount as the slash amount (simplified model).
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .ok_or(401u32)?;
+        let slash_amount = circle.contribution_amount;
+
+        if reserve < slash_amount {
+            return Err(405); // Insufficient collateral to slash.
+        }
+
+        // Deduct from reserve and place in the pending vault.
+        reserve -= slash_amount;
+        env.storage().instance().set(&DataKey::GroupReserve, &reserve);
+
+        let record = PendingSlashRecord {
+            amount: slash_amount,
+            slashed_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingSlash(circle_id, member), &record);
+
+        Ok(())
+    }
+
+    // Issue #324: Release pending-slash funds to the group reserve after the
+    // 72-hour appeals window has elapsed.
+    fn release_pending_slash(env: Env, circle_id: u64, member: Address) -> Result<(), u32> {
+        let record: PendingSlashRecord = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingSlash(circle_id, member.clone()))
+            .ok_or(405u32)?; // No pending slash for this member.
+
+        let current_time = env.ledger().timestamp();
+        let release_time = record
+            .slashed_at
+            .checked_add(APPEALS_TIMELOCK_SECS)
+            .ok_or(405u32)?;
+
+        if current_time < release_time {
+            return Err(406); // Timelock has not yet expired — appeal window still open.
+        }
+
+        // Timelock expired: redistribute to group reserve.
+        let mut reserve: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::GroupReserve)
+            .unwrap_or(0);
+        reserve = reserve.saturating_add(record.amount);
+        env.storage().instance().set(&DataKey::GroupReserve, &reserve);
+
+        // Remove the pending slash record.
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingSlash(circle_id, member));
+
         Ok(())
     }
 
