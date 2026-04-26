@@ -6,6 +6,7 @@ use soroban_sdk::{
 };
 
 pub mod yield_allocation_voting;
+pub mod yield_strategy_trait;
 
 // --- DATA STRUCTURES ---
 
@@ -178,6 +179,15 @@ impl SoroSusuTrait for SoroSusu {
         }
         // Set the admin
         env.storage().instance().set(&DataKey::Admin, &admin);
+
+        // Initialize pause state to false (not paused)
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        // Initialize emergency council with admin as initial member
+        let initial_council = vec![&env, admin.clone()];
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyCouncil, &initial_council);
     }
 
     fn create_circle(
@@ -239,6 +249,9 @@ impl SoroSusuTrait for SoroSusu {
     }
 
     fn join_circle(env: Env, user: Address, circle_id: u64) {
+        // Check if contract is paused
+        require_not_paused(&env);
+
         // 1. Authorization: The user MUST sign this transaction
         user.require_auth();
 
@@ -249,18 +262,18 @@ impl SoroSusuTrait for SoroSusu {
             .get(&DataKey::Circle(circle_id))
             .unwrap();
 
-        // 3. Check if the circle is full
+        // 4. Check if the circle is full
         if circle.member_count >= circle.max_members {
             panic!("Circle is full");
         }
 
-        // 4. Check if user is already a member to prevent duplicates
+        // 5. Check if user is already a member to prevent duplicates
         let member_key = DataKey::Member(user.clone());
         if env.storage().instance().has(&member_key) {
             panic!("User is already a member");
         }
 
-        // 5. Create and store the new member
+        // 6. Create and store the new member
         let new_member = Member {
             address: user.clone(),
             has_contributed: false,
@@ -280,7 +293,10 @@ impl SoroSusuTrait for SoroSusu {
     }
 
     fn deposit(env: Env, user: Address, circle_id: u64) {
-        // 1. Authorization: The user must sign this!
+        // 1. Check if contract is paused
+        require_not_paused(&env);
+
+        // 2. Authorization: The user must sign this!
         user.require_auth();
 
         // 2. Load the Circle Data
@@ -290,7 +306,7 @@ impl SoroSusuTrait for SoroSusu {
             .get(&DataKey::Circle(circle_id))
             .unwrap();
 
-        // 3. Check if user is actually a member
+        // 4. Check if user is actually a member
         let member_key = DataKey::Member(user.clone());
         let mut member: Member = env
             .storage()
@@ -321,7 +337,25 @@ impl SoroSusuTrait for SoroSusu {
             &circle.contribution_amount,
         );
 
-        // 7. Update member contribution info
+        // 8. Track initial deposit for recovery (only on first contribution)
+        let deposit_key = DataKey::InitialDeposit(circle_id, user.clone());
+        if !env.storage().instance().has(&deposit_key) {
+            env.storage()
+                .instance()
+                .set(&deposit_key, &circle.contribution_amount);
+        }
+
+        // 8.5. Track isolated contribution for opted-out members
+        if member.opt_out_of_yield {
+            let isolated_key = DataKey::IsolatedContribution(circle_id, user.clone());
+            let current_isolated: u64 = env.storage().instance().get(&isolated_key).unwrap_or(0);
+            env.storage().instance().set(
+                &isolated_key,
+                &(current_isolated + circle.contribution_amount),
+            );
+        }
+
+        // 9. Update member contribution info
         member.has_contributed = true;
         member.contribution_count += 1;
         member.last_contribution_time = current_time;
@@ -330,7 +364,7 @@ impl SoroSusuTrait for SoroSusu {
         // 8. Save updated member info
         env.storage().instance().set(&member_key, &member);
 
-        // 9. Update circle deadline for next cycle
+        // 11. Update circle deadline and last_interaction for next cycle
         circle.deadline_timestamp = current_time + circle.cycle_duration;
         env.storage()
             .instance()
@@ -487,9 +521,22 @@ impl SoroSusuTrait for SoroSusu {
             panic!("Risk tolerance too low for external routing");
         }
 
-        // 4. Transfer funds to Pool
+        // 3.5. Calculate amount to route, excluding opted-out members' contributions
+        let total_opted_out = get_total_opted_out_contributions(&env, circle_id);
+        let amount_to_route = amount.saturating_sub(total_opted_out);
+
+        if amount_to_route == 0 {
+            // All funds are opted out, nothing to route
+            return;
+        }
+
+        // 4. Transfer funds to Pool (only non-opted-out portion)
         let client = token::Client::new(&env, &circle.token);
-        client.transfer(&env.current_contract_address(), &pool_address, &amount);
+        client.transfer(
+            &env.current_contract_address(),
+            &pool_address,
+            &amount_to_route,
+        );
 
         // 5. Update Routed Amount storage
         let mut routed_amount: u64 = env
@@ -574,17 +621,17 @@ impl SoroSusuTrait for SoroSusu {
         let target_token = circle.token.clone();
         let target_amount = circle.contribution_amount;
 
-        // 2. Query DEX for Rate (Mocked for this implementation)
+        // 3. Query DEX for Rate (Mocked for this implementation)
         // In a real scenario, we would call a DEX contract like Soroswap or use a host function
         let exchange_rate = 10; // e.g. 10 XLM = 1 USDC
         let required_source_amount = target_amount * exchange_rate;
 
-        // 3. Slippage Check (#288)
+        // 4. Slippage Check (#288)
         if required_source_amount > source_amount_max {
             panic!("Slippage exceeded: required source amount exceeds max allowed");
         }
 
-        // 4. Perform Atomic Swap (Simulated)
+        // 5. Perform Atomic Swap (Simulated)
         // Transfer source asset from user to contract
         let source_client = token::Client::new(&env, &source_token);
         source_client.transfer(
@@ -605,12 +652,30 @@ impl SoroSusuTrait for SoroSusu {
             .get(&member_key)
             .unwrap_or_else(|| panic!("User is not a member"));
 
+        // Track initial deposit for recovery (only on first contribution)
+        let deposit_key = DataKey::InitialDeposit(circle_id, user.clone());
+        if !env.storage().instance().has(&deposit_key) {
+            env.storage()
+                .instance()
+                .set(&deposit_key, &circle.contribution_amount);
+        }
+
+        // Track isolated contribution for opted-out members
+        if member.opt_out_of_yield {
+            let isolated_key = DataKey::IsolatedContribution(circle_id, user.clone());
+            let current_isolated: u64 = env.storage().instance().get(&isolated_key).unwrap_or(0);
+            env.storage().instance().set(
+                &isolated_key,
+                &(current_isolated + circle.contribution_amount),
+            );
+        }
+
         member.has_contributed = true;
         member.contribution_count += 1;
         member.last_contribution_time = env.ledger().timestamp();
         env.storage().instance().set(&member_key, &member);
 
-        // Update circle deadline
+        // Update circle deadline and last_interaction
         circle.deadline_timestamp = env.ledger().timestamp() + circle.cycle_duration;
         env.storage()
             .instance()
@@ -1299,5 +1364,816 @@ mod fuzz_tests {
         let member_key = DataKey::Member(user.clone());
         let member: Member = env.storage().instance().get(&member_key).unwrap();
         assert!(member.has_contributed);
+    }
+
+    #[test]
+    fn test_heartbeat_recovery_state() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins and deposits
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+        env.mock_all_auths();
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+
+        // Check that circle is not in recovery state initially
+        let in_recovery = SoroSusuTrait::check_recovery_state(env.clone(), circle_id);
+        assert!(
+            !in_recovery,
+            "Circle should not be in recovery state initially"
+        );
+
+        // Simulate 365 days passing
+        let recovery_threshold = 365 * 24 * 60 * 60;
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + recovery_threshold);
+
+        // Check that circle enters recovery state
+        let in_recovery = SoroSusuTrait::check_recovery_state(env.clone(), circle_id);
+        assert!(
+            in_recovery,
+            "Circle should be in recovery state after 365 days"
+        );
+
+        // Verify circle is deactivated
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .unwrap();
+        assert!(
+            !circle.is_active,
+            "Circle should be deactivated in recovery state"
+        );
+        assert!(
+            circle.in_recovery,
+            "Circle should have in_recovery flag set"
+        );
+    }
+
+    #[test]
+    fn test_claim_abandoned_funds() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins and deposits
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+        env.mock_all_auths();
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+
+        // Simulate 365 days passing to enter recovery state
+        let recovery_threshold = 365 * 24 * 60 * 60;
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + recovery_threshold);
+        SoroSusuTrait::check_recovery_state(env.clone(), circle_id);
+
+        // Claim abandoned funds
+        let refund_amount =
+            SoroSusuTrait::claim_abandoned_funds(env.clone(), user.clone(), circle_id);
+
+        // Verify refund amount (initial deposit minus 2% protocol fee)
+        let expected_refund = 1000 - (1000 * 200 / 10000); // 1000 - 20 = 980
+        assert_eq!(
+            refund_amount, expected_refund,
+            "Refund amount should be initial deposit minus 2% fee"
+        );
+
+        // Verify user cannot claim again
+        let result = std::panic::catch_unwind(|| {
+            SoroSusuTrait::claim_abandoned_funds(env.clone(), user.clone(), circle_id);
+        });
+        assert!(result.is_err(), "User should not be able to claim twice");
+    }
+
+    #[test]
+    fn test_claim_before_recovery_state_fails() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins and deposits
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+        env.mock_all_auths();
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+
+        // Try to claim before recovery state (should fail)
+        let result = std::panic::catch_unwind(|| {
+            SoroSusuTrait::claim_abandoned_funds(env.clone(), user.clone(), circle_id);
+        });
+        assert!(result.is_err(), "Claim should fail before recovery state");
+    }
+
+    #[test]
+    fn test_deposit_blocked_in_recovery_state() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins and deposits
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+        env.mock_all_auths();
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+
+        // Enter recovery state
+        let recovery_threshold = 365 * 24 * 60 * 60;
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + recovery_threshold);
+        SoroSusuTrait::check_recovery_state(env.clone(), circle_id);
+
+        // Try to deposit again (should fail)
+        let result = std::panic::catch_unwind(|| {
+            SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+        });
+        assert!(result.is_err(), "Deposit should fail in recovery state");
+    }
+
+    #[test]
+    fn test_join_blocked_in_recovery_state() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User1 joins and deposits
+        SoroSusuTrait::join_circle(env.clone(), user1.clone(), circle_id);
+        env.mock_all_auths();
+        SoroSusuTrait::deposit(env.clone(), user1.clone(), circle_id);
+
+        // Enter recovery state
+        let recovery_threshold = 365 * 24 * 60 * 60;
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + recovery_threshold);
+        SoroSusuTrait::check_recovery_state(env.clone(), circle_id);
+
+        // Try to join with user2 (should fail)
+        let result = std::panic::catch_unwind(|| {
+            SoroSusuTrait::join_circle(env.clone(), user2.clone(), circle_id);
+        });
+        assert!(result.is_err(), "Join should fail in recovery state");
+    }
+
+    #[test]
+    fn test_last_interaction_updates_on_activity() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // Get initial last_interaction timestamp
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .unwrap();
+        let initial_timestamp = circle.last_interaction;
+
+        // User joins (should update last_interaction)
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .unwrap();
+        assert!(
+            circle.last_interaction > initial_timestamp,
+            "last_interaction should update on join"
+        );
+
+        // User deposits (should update last_interaction again)
+        let before_deposit = circle.last_interaction;
+        env.mock_all_auths();
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .unwrap();
+        assert!(
+            circle.last_interaction > before_deposit,
+            "last_interaction should update on deposit"
+        );
+    }
+
+    #[test]
+    fn test_commit_reveal_voting_flow() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let user3 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // Users join the circle
+        SoroSusuTrait::join_circle(env.clone(), user1.clone(), circle_id);
+        SoroSusuTrait::join_circle(env.clone(), user2.clone(), circle_id);
+        SoroSusuTrait::join_circle(env.clone(), user3.clone(), circle_id);
+
+        // Initialize voting session (1 hour commit, 1 hour reveal)
+        let commit_duration = 3600;
+        let reveal_duration = 3600;
+        SoroSusuTrait::initialize_voting_session(
+            env.clone(),
+            circle_id,
+            1, // proposal_id
+            commit_duration,
+            reveal_duration,
+        )
+        .unwrap();
+
+        // Commit votes (mock hashes)
+        let hash1 = Vec::from_array(&env, [1u8, 2u8, 3u8]);
+        let hash2 = Vec::from_array(&env, [4u8, 5u8, 6u8]);
+        let hash3 = Vec::from_array(&env, [7u8, 8u8, 9u8]);
+
+        env.mock_all_auths();
+        SoroSusuTrait::commit_vote(env.clone(), user1.clone(), circle_id, hash1).unwrap();
+        SoroSusuTrait::commit_vote(env.clone(), user2.clone(), circle_id, hash2).unwrap();
+        SoroSusuTrait::commit_vote(env.clone(), user3.clone(), circle_id, hash3).unwrap();
+
+        // Verify session has 3 commits
+        let session: VotingSession = env
+            .storage()
+            .instance()
+            .get(&DataKey::VotingSession(circle_id))
+            .unwrap();
+        assert_eq!(session.total_commits, 3);
+
+        // Advance time to reveal phase
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + commit_duration + 1);
+
+        // Reveal votes
+        let salt1 = Vec::from_array(&env, [10u8, 11u8]);
+        let salt2 = Vec::from_array(&env, [12u8, 13u8]);
+        let salt3 = Vec::from_array(&env, [14u8, 15u8]);
+
+        SoroSusuTrait::reveal_vote(env.clone(), user1.clone(), circle_id, true, salt1).unwrap();
+        SoroSusuTrait::reveal_vote(env.clone(), user2.clone(), circle_id, true, salt2).unwrap();
+        SoroSusuTrait::reveal_vote(env.clone(), user3.clone(), circle_id, false, salt3).unwrap();
+
+        // Verify session has 3 reveals
+        let session: VotingSession = env
+            .storage()
+            .instance()
+            .get(&DataKey::VotingSession(circle_id))
+            .unwrap();
+        assert_eq!(session.total_reveals, 3);
+
+        // Advance time to completion
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + reveal_duration + 1);
+
+        // Tally votes
+        let tally = SoroSusuTrait::tally_votes(env.clone(), circle_id).unwrap();
+        assert_eq!(tally.yes_votes, 2);
+        assert_eq!(tally.no_votes, 1);
+        assert_eq!(tally.total_voters, 3);
+    }
+
+    #[test]
+    fn test_commit_phase_only() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Initialize voting session
+        SoroSusuTrait::initialize_voting_session(env.clone(), circle_id, 1, 3600, 3600).unwrap();
+
+        // Try to reveal before commit phase ends (should fail)
+        let salt = Vec::from_array(&env, [1u8, 2u8]);
+        env.mock_all_auths();
+        let result = SoroSusuTrait::reveal_vote(env.clone(), user.clone(), circle_id, true, salt);
+        assert!(result.is_err(), "Reveal should fail during commit phase");
+    }
+
+    #[test]
+    fn test_double_commit_fails() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Initialize voting session
+        SoroSusuTrait::initialize_voting_session(env.clone(), circle_id, 1, 3600, 3600).unwrap();
+
+        // Commit first vote
+        let hash = Vec::from_array(&env, [1u8, 2u8, 3u8]);
+        env.mock_all_auths();
+        SoroSusuTrait::commit_vote(env.clone(), user.clone(), circle_id, hash).unwrap();
+
+        // Try to commit again (should fail)
+        let hash2 = Vec::from_array(&env, [4u8, 5u8, 6u8]);
+        let result = SoroSusuTrait::commit_vote(env.clone(), user.clone(), circle_id, hash2);
+        assert!(result.is_err(), "Double commit should fail");
+    }
+
+    #[test]
+    fn test_double_reveal_fails() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Initialize voting session
+        SoroSusuTrait::initialize_voting_session(env.clone(), circle_id, 1, 3600, 3600).unwrap();
+
+        // Commit vote
+        let hash = Vec::from_array(&env, [1u8, 2u8, 3u8]);
+        env.mock_all_auths();
+        SoroSusuTrait::commit_vote(env.clone(), user.clone(), circle_id, hash).unwrap();
+
+        // Advance to reveal phase
+        env.ledger().set_timestamp(env.ledger().timestamp() + 3601);
+
+        // Reveal first time
+        let salt = Vec::from_array(&env, [10u8, 11u8]);
+        SoroSusuTrait::reveal_vote(env.clone(), user.clone(), circle_id, true, salt).unwrap();
+
+        // Try to reveal again (should fail)
+        let salt2 = Vec::from_array(&env, [12u8, 13u8]);
+        let result = SoroSusuTrait::reveal_vote(env.clone(), user.clone(), circle_id, false, salt2);
+        assert!(result.is_err(), "Double reveal should fail");
+    }
+
+    #[test]
+    fn test_reveal_without_commit_fails() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Initialize voting session
+        SoroSusuTrait::initialize_voting_session(env.clone(), circle_id, 1, 3600, 3600).unwrap();
+
+        // Skip commit, advance to reveal phase
+        env.ledger().set_timestamp(env.ledger().timestamp() + 3601);
+
+        // Try to reveal without committing (should fail)
+        let salt = Vec::from_array(&env, [10u8, 11u8]);
+        env.mock_all_auths();
+        let result = SoroSusuTrait::reveal_vote(env.clone(), user.clone(), circle_id, true, salt);
+        assert!(result.is_err(), "Reveal without commit should fail");
+    }
+
+    #[test]
+    fn test_tally_before_completion_fails() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Initialize voting session
+        SoroSusuTrait::initialize_voting_session(env.clone(), circle_id, 1, 3600, 3600).unwrap();
+
+        // Try to tally during commit phase (should fail)
+        let result = SoroSusuTrait::tally_votes(env.clone(), circle_id);
+        assert!(result.is_err(), "Tally before completion should fail");
+    }
+
+    #[test]
+    fn test_opt_out_of_yield() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Opt out of yield
+        env.mock_all_auths();
+        SoroSusuTrait::opt_out_of_yield(env.clone(), user.clone(), circle_id).unwrap();
+
+        // Verify opt_out_of_yield flag is set
+        let member_key = DataKey::Member(user.clone());
+        let member: Member = env.storage().instance().get(&member_key).unwrap();
+        assert!(
+            member.opt_out_of_yield,
+            "Member should have opted out of yield"
+        );
+    }
+
+    #[test]
+    fn test_isolated_contribution_tracking() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Opt out of yield
+        env.mock_all_auths();
+        SoroSusuTrait::opt_out_of_yield(env.clone(), user.clone(), circle_id).unwrap();
+
+        // Make deposit
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+
+        // Verify isolated contribution is tracked
+        let isolated_key = DataKey::IsolatedContribution(circle_id, user.clone());
+        let isolated: u64 = env.storage().instance().get(&isolated_key).unwrap_or(0);
+        assert_eq!(
+            isolated, 1000,
+            "Isolated contribution should equal deposit amount"
+        );
+    }
+
+    #[test]
+    fn test_opt_out_member_not_in_yield_routing() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let token = Address::generate(&env);
+        let pool = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // Both users join
+        SoroSusuTrait::join_circle(env.clone(), user1.clone(), circle_id);
+        SoroSusuTrait::join_circle(env.clone(), user2.clone(), circle_id);
+
+        // User1 opts out of yield
+        env.mock_all_auths();
+        SoroSusuTrait::opt_out_of_yield(env.clone(), user1.clone(), circle_id).unwrap();
+
+        // Both users deposit
+        SoroSusuTrait::deposit(env.clone(), user1.clone(), circle_id);
+        SoroSusuTrait::deposit(env.clone(), user2.clone(), circle_id);
+
+        // Calculate total opted-out contributions
+        let total_opted_out = get_total_opted_out_contributions(&env, circle_id);
+        assert_eq!(
+            total_opted_out, 1000,
+            "Should have 1000 from opted-out user"
+        );
+
+        // Route to yield (should only route user2's contribution)
+        let initial_routed: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoutedAmount(circle_id))
+            .unwrap_or(0);
+        SoroSusuTrait::route_to_yield(env.clone(), circle_id, 2000, pool);
+
+        let final_routed: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoutedAmount(circle_id))
+            .unwrap_or(0);
+
+        // Should have routed only 1000 (user2's contribution, not user1's)
+        assert_eq!(
+            final_routed - initial_routed,
+            1000,
+            "Should only route non-opted-out contributions"
+        );
+    }
+
+    #[test]
+    fn test_get_member_payout_amount_opted_out() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Opt out of yield
+        env.mock_all_auths();
+        SoroSusuTrait::opt_out_of_yield(env.clone(), user.clone(), circle_id).unwrap();
+
+        // Make deposit
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+
+        // Test payout calculation
+        let normal_payout = 1500; // Would include yield
+        let actual_payout = get_member_payout_amount(&env, circle_id, user.clone(), normal_payout);
+
+        // Should return exact contribution (1000), not normal payout (1500)
+        assert_eq!(
+            actual_payout, 1000,
+            "Opted-out member should receive exact contribution"
+        );
+    }
+
+    #[test]
+    fn test_get_member_payout_amount_normal() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Initialize contract
+        SoroSusuTrait::init(env.clone(), admin.clone());
+
+        // Create a circle
+        let circle_id = SoroSusuTrait::create_circle(
+            env.clone(),
+            creator.clone(),
+            1000,
+            5,
+            token.clone(),
+            604800,
+            true,
+            1,
+        );
+
+        // User joins (does NOT opt out)
+        SoroSusuTrait::join_circle(env.clone(), user.clone(), circle_id);
+
+        // Make deposit
+        env.mock_all_auths();
+        SoroSusuTrait::deposit(env.clone(), user.clone(), circle_id);
+
+        // Test payout calculation
+        let normal_payout = 1500; // Would include yield
+        let actual_payout = get_member_payout_amount(&env, circle_id, user.clone(), normal_payout);
+
+        // Should return normal payout (1500), since not opted out
+        assert_eq!(
+            actual_payout, 1500,
+            "Normal member should receive payout with yield"
+        );
     }
 }
