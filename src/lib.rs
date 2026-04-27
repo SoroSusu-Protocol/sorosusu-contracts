@@ -2,7 +2,7 @@
 use arbitrary::{Arbitrary, Unstructured};
 use soroban_sdk::{
     contract, contractimpl, contracttype, testutils::Address as TestAddress, token, Address, Env,
-    Symbol, Vec,
+    Symbol, Vec, Bytes, BytesN,
 };
 
 pub mod dispute;
@@ -10,6 +10,8 @@ pub mod yield_allocation_voting;
 pub mod yield_strategy_trait;
 // Issue #323: VRF-based juror selection for global dispute resolution.
 pub mod juror_selection;
+// Stellar Protocol 21+ Passkey Authentication Support
+pub mod passkey_auth;
 
 // Issue #321: Maximum cycle duration cap (2 years in seconds) to prevent
 // integer overflow exploits and unbounded storage accumulation.
@@ -447,6 +449,38 @@ pub trait SoroSusuTrait {
     fn check_recovery_state(env: Env, circle_id: u64) -> bool;
 
     fn claim_abandoned_funds(env: Env, user: Address, circle_id: u64);
+
+    // --- Passkey Authentication Functions ---
+
+    /// Register a new passkey for biometric authentication
+    fn register_passkey(
+        env: Env,
+        user: Address,
+        public_key: BytesN<33>,
+        credential_id: Bytes,
+        origin: Symbol,
+    ) -> Result<(), u32>;
+
+    /// Authenticate using a passkey signature (biometric)
+    fn authenticate_with_passkey(
+        env: Env,
+        user: Address,
+        signature: passkey_auth::PasskeySignature,
+        credential_id: Bytes,
+    ) -> Result<bool, u32>;
+
+    /// Generate a challenge for WebAuthn authentication
+    fn generate_challenge(env: Env, user: Address) -> Bytes;
+
+    /// Get user's authentication profile
+    fn get_auth_profile(env: Env, user: Address) -> Result<passkey_auth::UserAuthProfile, u32>;
+
+    /// Set preferred authentication method (Ed25519 or Passkey)
+    fn set_preferred_auth_method(
+        env: Env,
+        user: Address,
+        method: passkey_auth::AuthMethod,
+    ) -> Result<(), u32>;
 }
 
 // --- IMPLEMENTATION ---
@@ -2017,6 +2051,153 @@ impl SoroSusuTrait for SoroSusu {
     }
 }
 
+    // --- PASSKEY AUTHENTICATION IMPLEMENTATIONS ---
+
+    fn register_passkey(
+        env: Env,
+        user: Address,
+        public_key: BytesN<33>,
+        credential_id: Bytes,
+        origin: Symbol,
+    ) -> Result<(), u32> {
+        match passkey_auth::PasskeyAuth::register_passkey(
+            env.clone(),
+            user.clone(),
+            public_key,
+            credential_id.clone(),
+            origin,
+        ) {
+            Ok(()) => {
+                // Emit event for successful registration
+                env.events().publish(
+                    (Symbol::new(&env, "PasskeyRegistered"),),
+                    (user, credential_id),
+                );
+                Ok(())
+            }
+            Err(e) => Err(e as u32),
+        }
+    }
+
+    fn authenticate_with_passkey(
+        env: Env,
+        user: Address,
+        signature: passkey_auth::PasskeySignature,
+        credential_id: Bytes,
+    ) -> Result<bool, u32> {
+        match passkey_auth::PasskeyAuth::authenticate_with_passkey(
+            env.clone(),
+            user.clone(),
+            signature,
+            credential_id.clone(),
+        ) {
+            Ok(is_valid) => {
+                if is_valid {
+                    // Emit event for successful authentication
+                    env.events().publish(
+                        (Symbol::new(&env, "PasskeyAuthenticated"),),
+                        (user, credential_id),
+                    );
+                }
+                Ok(is_valid)
+            }
+            Err(e) => Err(e as u32),
+        }
+    }
+
+    fn generate_challenge(env: Env, user: Address) -> Bytes {
+        let challenge = passkey_auth::PasskeyAuth::generate_challenge(env.clone(), user.clone());
+        
+        // Emit event for challenge generation
+        env.events().publish(
+            (Symbol::new(&env, "ChallengeGenerated"),),
+            (user, challenge.clone()),
+        );
+        
+        challenge
+    }
+
+    fn get_auth_profile(env: Env, user: Address) -> Result<passkey_auth::UserAuthProfile, u32> {
+        passkey_auth::PasskeyAuth::get_auth_profile(env, user)
+            .map_err(|e| e as u32)
+    }
+
+    fn set_preferred_auth_method(
+        env: Env,
+        user: Address,
+        method: passkey_auth::AuthMethod,
+    ) -> Result<(), u32> {
+        match passkey_auth::PasskeyAuth::set_preferred_auth_method(
+            env.clone(),
+            user.clone(),
+            method,
+        ) {
+            Ok(()) => {
+                // Emit event for method change
+                env.events().publish(
+                    (Symbol::new(&env, "AuthMethodChanged"),),
+                    (user, method),
+                );
+                Ok(())
+            }
+            Err(e) => Err(e as u32),
+        }
+    }
+}
+
+// --- ENHANCED AUTHENTICATION HELPER ---
+
+/// Enhanced authentication function that supports both Ed25519 and Passkeys
+/// This function should replace direct `user.require_auth()` calls throughout the codebase
+fn require_auth_enhanced(
+    env: &Env,
+    user: &Address,
+    auth_method: Option<passkey_auth::AuthMethod>,
+    passkey_signature: Option<passkey_auth::PasskeySignature>,
+    credential_id: Option<Bytes>,
+) -> Result<(), u32> {
+    // Get user's auth profile
+    let profile_key = passkey_auth::PasskeyDataKey::UserAuthProfile(user.clone());
+    let profile: Option<passkey_auth::UserAuthProfile> = if env.storage().instance().has(&profile_key) {
+        env.storage().instance().get(&profile_key)
+    } else {
+        None
+    };
+
+    // Determine which method to use
+    let method = auth_method.or_else(|| profile.as_ref().map(|p| p.preferred_method))
+        .unwrap_or(passkey_auth::AuthMethod::Ed25519);
+
+    match method {
+        passkey_auth::AuthMethod::Ed25519 => {
+            // Use traditional Stellar authentication
+            user.require_auth();
+            Ok(())
+        }
+        passkey_auth::AuthMethod::Secp256r1 => {
+            // Use passkey authentication
+            let signature = passkey_signature.ok_or(passkey_auth::PasskeyError::InvalidSignature as u32)?;
+            let cred_id = credential_id.ok_or(passkey_auth::PasskeyError::CredentialNotFound as u32)?;
+            
+            match passkey_auth::PasskeyAuth::authenticate_with_passkey(
+                env.clone(),
+                user.clone(),
+                signature,
+                cred_id,
+            ) {
+                Ok(is_valid) => {
+                    if is_valid {
+                        Ok(())
+                    } else {
+                        Err(passkey_auth::PasskeyError::InvalidSignature as u32)
+                    }
+                }
+                Err(e) => Err(e as u32),
+            }
+        }
+    }
+}
+
 // --- HELPER FUNCTIONS ---
 
 fn handle_default_yield_distribution(
@@ -2119,6 +2300,9 @@ pub struct VotingSession {
 
 #[cfg(test)]
 mod yield_allocation_voting_tests;
+
+#[cfg(test)]
+mod passkey_auth_tests;
 
 #[cfg(test)]
 mod fuzz_tests {
