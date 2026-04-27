@@ -5,6 +5,7 @@ use soroban_sdk::{
     Symbol, Vec, Bytes, BytesN,
 };
 
+pub mod chat_metadata;
 pub mod dispute;
 pub mod yield_allocation_voting;
 pub mod yield_strategy_trait;
@@ -38,6 +39,8 @@ pub enum DataKey {
     BatchHarvestProgress(u64),
     // New: Tracks defaulted members (CircleID, MemberAddress)
     DefaultedMember(u64, Address),
+    // New: Tracks user's circle membership
+    UserCircle(Address),
     // Pause / emergency council
     IsPaused,
     EmergencyCouncil,
@@ -110,6 +113,15 @@ pub struct Member {
     pub missed_deadline_timestamp: u64, // Tracks when member missed deadline (0 if never missed)
     pub opt_out_of_yield: bool,         // Issue #304: member opted out of yield routing
     pub amount_contributed: u64,        // Tracks amount paid for current cycle
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct UserSummary {
+    pub next_payment_amount: u64, // Amount due for next contribution
+    pub due_date: u64,            // Timestamp when payment is due
+    pub current_position: u32,    // User's position in the circle (contribution count)
+    pub ri_score: u32,            // Reliability Index score (0-10000 basis points)
 }
 
 #[contracttype]
@@ -366,6 +378,11 @@ pub trait SoroSusuTrait {
     /// Opt a member out of yield routing for a circle.
     fn opt_out_of_yield(env: Env, user: Address, circle_id: u64) -> Result<(), u32>;
 
+    // --- Simplified-View Read-Only Wrapper ---
+
+    /// Get aggregated user summary for mobile clients (read-only).
+    fn get_user_summary(env: Env, user: Address) -> Option<UserSummary>;
+
     // --- Commit-reveal voting ---
 
     fn initialize_voting_session(
@@ -609,6 +626,7 @@ impl SoroSusuTrait for SoroSusu {
 
         // 6. Store the member and update circle count
         env.storage().instance().set(&member_key, &new_member);
+        env.storage().instance().set(&DataKey::UserCircle(user.clone()), &circle_id);
         circle.member_count += 1;
 
         // 7. Save the updated circle back to storage
@@ -1694,507 +1712,38 @@ impl SoroSusuTrait for SoroSusu {
         );
     }
 
-    // --- SEP-24 ANCHOR INTEGRATION IMPLEMENTATIONS ---
+    // -----------------------------------------------------------------------
+    // Simplified-View Read-Only Wrapper
+    // -----------------------------------------------------------------------
 
-    fn register_anchor(
-        env: Env,
-        admin: Address,
-        anchor_address: Address,
-        name: Symbol,
-        sep_version: Symbol,
-        kyc_required: bool,
-        supported_tokens: Vec<Address>,
-        max_deposit_amount: u64,
-        daily_deposit_limit: u64,
-    ) {
-        admin.require_auth();
-
-        // Verify admin authorization
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic!("admin not set"));
-        if admin != stored_admin {
-            panic!("unauthorized");
-        }
-
-        // Create anchor info
-        let anchor_info = AnchorInfo {
-            address: anchor_address.clone(),
-            name,
-            sep_version,
-            status: AnchorStatus::Active,
-            kyc_required,
-            supported_tokens,
-            max_deposit_amount,
-            daily_deposit_limit,
-            registration_date: env.ledger().timestamp(),
-        };
-
-        // Store anchor info
-        env.storage()
-            .instance()
-            .set(&DataKey::AnchorRegistry(anchor_address), &anchor_info);
-
-        // Initialize anchor deposit counter if not exists
-        if !env.storage().instance().has(&DataKey::AnchorDepositCount) {
-            env.storage().instance().set(&DataKey::AnchorDepositCount, &0u64);
-        }
-    }
-
-    fn get_anchor_info(env: Env, anchor_address: Address) -> AnchorInfo {
-        env.storage()
-            .instance()
-            .get(&DataKey::AnchorRegistry(anchor_address))
-            .unwrap_or_else(|| panic!("anchor not found"))
-    }
-
-    fn get_registered_anchors(env: Env) -> Vec<Address> {
-        // For simplicity, return empty vector - in production, maintain a registry list
-        Vec::new(&env)
-    }
-
-    fn set_payout_preference(
-        env: Env,
-        user: Address,
-        circle_id: u64,
-        payout_method: PayoutMethod,
-        anchor_config: Option<AnchorDepositConfig>,
-    ) {
-        user.require_auth();
-
-        // Verify circle exists
-        let _circle: CircleInfo = env
-            .storage()
-            .instance()
-            .get(&DataKey::Circle(circle_id))
-            .unwrap_or_else(|| panic!("circle not found"));
-
-        // Store user preference
-        let preference = UserBankPreference {
-            user: user.clone(),
-            circle_id,
-            payout_method,
-            anchor_config,
-        };
-
-        env.storage()
-            .instance()
-            .set(&DataKey::UserBankPreference(user, circle_id), &preference);
-    }
-
-    fn get_payout_preference(env: Env, user: Address, circle_id: u64) -> UserBankPreference {
-        // Return default preference if not set
-        env.storage()
-            .instance()
-            .get(&DataKey::UserBankPreference(user, circle_id))
-            .unwrap_or_else(|| UserBankPreference {
-                user,
-                circle_id,
-                payout_method: PayoutMethod::DirectToken,
-                anchor_config: None,
-            })
-    }
-
-    fn deposit_for_user(
-        env: Env,
-        anchor_address: Address,
-        user_address: Address,
-        circle_id: u64,
-        amount: u64,
-        token: Address,
-        fiat_reference: Symbol,
-    ) {
-        // Verify anchor exists and is active
-        let anchor_info = Self::get_anchor_info(env.clone(), anchor_address.clone());
-        if anchor_info.status != AnchorStatus::Active {
-            panic!("anchor is not active");
-        }
-
-        // Verify token is supported by anchor
-        if !anchor_info.supported_tokens.contains(&token) {
-            panic!("token not supported by anchor");
-        }
-
-        // Enhanced deposit limit checking
-        Self::check_deposit_limits(&env, &anchor_info, &user_address, amount, &token)?;
-
-        // KYC verification if required
-        if anchor_info.kyc_required {
-            Self::verify_user_kyc(&env, &anchor_address, &user_address)?;
-        }
-
-        // Get deposit ID
-        let mut deposit_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AnchorDepositCount)
-            .unwrap_or(0);
-        deposit_count += 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::AnchorDepositCount, &deposit_count);
-
-        // Create deposit record
-        let deposit = AnchorDeposit {
-            anchor_address: anchor_address.clone(),
-            user_address: user_address.clone(),
-            circle_id,
-            amount,
-            token: token.clone(),
-            fiat_reference,
-            status: DepositStatus::Pending,
-            timestamp: env.ledger().timestamp(),
-        };
-
-        // Store deposit
-        env.storage()
-            .instance()
-            .set(&DataKey::AnchorDeposit(deposit_count), &deposit);
-
-        // Transfer tokens to anchor
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &anchor_address,
-            &(amount as i128),
-        );
-
-        // Update deposit status to completed
-        let mut updated_deposit = deposit;
-        updated_deposit.status = DepositStatus::Completed;
-        env.storage()
-            .instance()
-            .set(&DataKey::AnchorDeposit(deposit_count), &updated_deposit);
-
-        // Process as regular contribution for the circle
-        let member_key = DataKey::Member(user_address.clone());
-        let mut member: Member = env
-            .storage()
-            .instance()
-            .get(&member_key)
-            .unwrap_or_else(|| panic!("member not found"));
-
-        member.contribution_count += 1;
-        member.amount_contributed += amount;
-        member.last_contribution_time = env.ledger().timestamp();
-        member.has_contributed = true;
-
-        env.storage().instance().set(&member_key, &member);
-    }
-
-    fn process_anchor_payout(
-        env: Env,
-        anchor_address: Address,
-        user_address: Address,
-        circle_id: u64,
-        amount: u64,
-        token: Address,
-    ) -> Result<u64, u32> {
-        // Verify anchor exists and is active
-        let anchor_info = Self::get_anchor_info(env.clone(), anchor_address.clone());
-        if anchor_info.status != AnchorStatus::Active {
-            return Err(500); // Anchor inactive
-        }
-
-        // Get deposit ID
-        let mut deposit_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AnchorDepositCount)
-            .unwrap_or(0);
-        deposit_count += 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::AnchorDepositCount, &deposit_count);
-
-        // Create payout deposit record
-        let deposit = AnchorDeposit {
-            anchor_address: anchor_address.clone(),
-            user_address,
-            circle_id,
-            amount,
-            token,
-            fiat_reference: Symbol::short(&env, "PAYOUT"), // Default reference
-            status: DepositStatus::Pending,
-            timestamp: env.ledger().timestamp(),
-        };
-
-        // Store deposit
-        env.storage()
-            .instance()
-            .set(&DataKey::AnchorDeposit(deposit_count), &deposit);
-
-        // Transfer tokens to anchor for fiat conversion
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &anchor_address,
-            &(amount as i128),
-        );
-
-        // Update deposit status
-        let mut updated_deposit = deposit;
-        updated_deposit.status = DepositStatus::Completed;
-        env.storage()
-            .instance()
-            .set(&DataKey::AnchorDeposit(deposit_count), &updated_deposit);
-
-        Ok(deposit_count)
-    }
-
-    fn get_anchor_deposit_status(env: Env, deposit_id: u64) -> AnchorDeposit {
-        env.storage()
-            .instance()
-            .get(&DataKey::AnchorDeposit(deposit_id))
-            .unwrap_or_else(|| panic!("deposit not found"))
-    }
-
-    // --- SEP-24 HELPER FUNCTIONS ---
-
-    /// Check if deposit complies with anchor limits and user daily limits
-    fn check_deposit_limits(
-        env: &Env,
-        anchor_info: &AnchorInfo,
-        user_address: &Address,
-        amount: u64,
-        token: &Address,
-    ) -> Result<(), u32> {
-        // Check maximum deposit amount per transaction
-        if amount > anchor_info.max_deposit_amount {
-            return Err(401); // Amount exceeds maximum
-        }
-
-        // Check daily deposit limit (simplified - in production, track per user per day)
-        let current_day = env.ledger().timestamp() / 86400; // Current day in seconds
-        let daily_limit_key = format!("daily_limit_{}_{}_{}", 
-            anchor_info.address.to_string(), 
-            user_address.to_string(), 
-            current_day
-        );
+    fn get_user_summary(env: Env, user: Address) -> Option<UserSummary> {
+        // Get user's circle
+        let circle_id: u64 = env.storage().instance().get(&DataKey::UserCircle(user.clone()))?;
         
-        // For simplicity, we'll just check against the anchor's daily limit
-        // In production, you'd track cumulative daily deposits per user
-        if amount > anchor_info.daily_deposit_limit {
-            return Err(402); // Daily limit exceeded
-        }
-
-        Ok(())
-    }
-
-    /// Verify user KYC status with anchor
-    fn verify_user_kyc(
-        env: &Env,
-        anchor_address: &Address,
-        user_address: &Address,
-    ) -> Result<(), u32> {
-        // In a real implementation, this would:
-        // 1. Call the anchor's KYC verification endpoint
-        // 2. Check if the user has completed KYC
-        // 3. Verify the KYC level meets requirements
+        // Get member data
+        let member: Member = env.storage().instance().get(&DataKey::Member(user.clone()))?;
         
-        // For now, we'll simulate a basic KYC check
-        // In production, this would be an external contract call to the anchor
+        // Get circle data
+        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id))?;
         
-        // Create a simple KYC status key (in production, this would be from anchor)
-        let kyc_key = format!("kyc_status_{}_{}", 
-            anchor_address.to_string(), 
-            user_address.to_string()
-        );
+        // Calculate next payment amount (base contribution, no late fee for summary)
+        let next_payment_amount = circle.contribution_amount;
         
-        // For demonstration, we'll assume all users are KYC verified
-        // In production, this would query the anchor's KYC system
-        let kyc_verified = true; // Simulated
+        // Calculate due date (next cycle deadline)
+        let due_date = circle.deadline_timestamp + ((member.contribution_count as u64 + 1) * circle.cycle_duration);
         
-        if !kyc_verified {
-            return Err(403); // KYC not verified
-        }
-
-        Ok(())
-    }
-
-    /// Validate bank account details (hash verification)
-    fn validate_bank_details(
-        bank_account_hash: u64,
-        mobile_number_hash: u64,
-    ) -> Result<(), u32> {
-        // Basic validation to ensure hashes are not zero
-        if bank_account_hash == 0 {
-            return Err(404); // Invalid bank account
-        }
+        // Current position (contribution count as position indicator)
+        let current_position = member.contribution_count;
         
-        if mobile_number_hash == 0 {
-            return Err(405); // Invalid mobile number
-        }
-
-        // In production, you might add more sophisticated validation
-        // such as checksum verification, format validation, etc.
-
-        Ok(())
-    }
-
-    /// Get available anchors for a specific token and region
-    fn get_available_anchors(
-        env: &Env,
-        token: &Address,
-        fiat_currency: Symbol,
-    ) -> Vec<Address> {
-        // In production, this would filter anchors by:
-        // 1. Token support
-        // 2. Geographic region/currency support  
-        // 3. Active status
-        // 4. Current capacity
+        // RI score (simplified calculation: contribution_count * 100, capped at 10000)
+        let ri_score = (member.contribution_count as u32 * 100).min(10000);
         
-        // For now, return empty vector
-        Vec::new(env)
-    }
-}
-
-    // --- PASSKEY AUTHENTICATION IMPLEMENTATIONS ---
-
-    fn register_passkey(
-        env: Env,
-        user: Address,
-        public_key: BytesN<33>,
-        credential_id: Bytes,
-        origin: Symbol,
-    ) -> Result<(), u32> {
-        match passkey_auth::PasskeyAuth::register_passkey(
-            env.clone(),
-            user.clone(),
-            public_key,
-            credential_id.clone(),
-            origin,
-        ) {
-            Ok(()) => {
-                // Emit event for successful registration
-                env.events().publish(
-                    (Symbol::new(&env, "PasskeyRegistered"),),
-                    (user, credential_id),
-                );
-                Ok(())
-            }
-            Err(e) => Err(e as u32),
-        }
-    }
-
-    fn authenticate_with_passkey(
-        env: Env,
-        user: Address,
-        signature: passkey_auth::PasskeySignature,
-        credential_id: Bytes,
-    ) -> Result<bool, u32> {
-        match passkey_auth::PasskeyAuth::authenticate_with_passkey(
-            env.clone(),
-            user.clone(),
-            signature,
-            credential_id.clone(),
-        ) {
-            Ok(is_valid) => {
-                if is_valid {
-                    // Emit event for successful authentication
-                    env.events().publish(
-                        (Symbol::new(&env, "PasskeyAuthenticated"),),
-                        (user, credential_id),
-                    );
-                }
-                Ok(is_valid)
-            }
-            Err(e) => Err(e as u32),
-        }
-    }
-
-    fn generate_challenge(env: Env, user: Address) -> Bytes {
-        let challenge = passkey_auth::PasskeyAuth::generate_challenge(env.clone(), user.clone());
-        
-        // Emit event for challenge generation
-        env.events().publish(
-            (Symbol::new(&env, "ChallengeGenerated"),),
-            (user, challenge.clone()),
-        );
-        
-        challenge
-    }
-
-    fn get_auth_profile(env: Env, user: Address) -> Result<passkey_auth::UserAuthProfile, u32> {
-        passkey_auth::PasskeyAuth::get_auth_profile(env, user)
-            .map_err(|e| e as u32)
-    }
-
-    fn set_preferred_auth_method(
-        env: Env,
-        user: Address,
-        method: passkey_auth::AuthMethod,
-    ) -> Result<(), u32> {
-        match passkey_auth::PasskeyAuth::set_preferred_auth_method(
-            env.clone(),
-            user.clone(),
-            method,
-        ) {
-            Ok(()) => {
-                // Emit event for method change
-                env.events().publish(
-                    (Symbol::new(&env, "AuthMethodChanged"),),
-                    (user, method),
-                );
-                Ok(())
-            }
-            Err(e) => Err(e as u32),
-        }
-    }
-}
-
-// --- ENHANCED AUTHENTICATION HELPER ---
-
-/// Enhanced authentication function that supports both Ed25519 and Passkeys
-/// This function should replace direct `user.require_auth()` calls throughout the codebase
-fn require_auth_enhanced(
-    env: &Env,
-    user: &Address,
-    auth_method: Option<passkey_auth::AuthMethod>,
-    passkey_signature: Option<passkey_auth::PasskeySignature>,
-    credential_id: Option<Bytes>,
-) -> Result<(), u32> {
-    // Get user's auth profile
-    let profile_key = passkey_auth::PasskeyDataKey::UserAuthProfile(user.clone());
-    let profile: Option<passkey_auth::UserAuthProfile> = if env.storage().instance().has(&profile_key) {
-        env.storage().instance().get(&profile_key)
-    } else {
-        None
-    };
-
-    // Determine which method to use
-    let method = auth_method.or_else(|| profile.as_ref().map(|p| p.preferred_method))
-        .unwrap_or(passkey_auth::AuthMethod::Ed25519);
-
-    match method {
-        passkey_auth::AuthMethod::Ed25519 => {
-            // Use traditional Stellar authentication
-            user.require_auth();
-            Ok(())
-        }
-        passkey_auth::AuthMethod::Secp256r1 => {
-            // Use passkey authentication
-            let signature = passkey_signature.ok_or(passkey_auth::PasskeyError::InvalidSignature as u32)?;
-            let cred_id = credential_id.ok_or(passkey_auth::PasskeyError::CredentialNotFound as u32)?;
-            
-            match passkey_auth::PasskeyAuth::authenticate_with_passkey(
-                env.clone(),
-                user.clone(),
-                signature,
-                cred_id,
-            ) {
-                Ok(is_valid) => {
-                    if is_valid {
-                        Ok(())
-                    } else {
-                        Err(passkey_auth::PasskeyError::InvalidSignature as u32)
-                    }
-                }
-                Err(e) => Err(e as u32),
-            }
-        }
+        Some(UserSummary {
+            next_payment_amount,
+            due_date,
+            current_position,
+            ri_score,
+        })
     }
 }
 
