@@ -395,6 +395,20 @@ Fired when a Soulbound Token credential is issued to a member.
 
 ---
 
+### Event: `ReputationBadgeUpdated`
+
+Fired when a reputation SBT is minted or its dynamic metadata changes.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| topic[0] | Symbol | `"ReputationBadgeUpdated"` |
+| topic[1] | u128 | SBT token ID |
+| data[0] | Address | Badge owner |
+| data[1] | SbtStatus | Current status or tier title |
+| data[2] | String | Updated IPFS metadata URI |
+
+---
+
 ### Event: `MissingTrustline`
 
 Fired when a yield payout is held because the recipient lacks a trustline for the circle token.

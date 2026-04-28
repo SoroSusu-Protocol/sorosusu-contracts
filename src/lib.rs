@@ -2563,7 +2563,7 @@ impl SoroSusuTrait for SoroSusu {
         let credential = SoroSusuCredential {
             token_id,
             user: user.clone(),
-            status,
+            status: status.clone(),
             reputation_score,
             metadata_uri: String::from_str(env, "ipfs://sorosusu-sbt-metadata"),
             issue_date: env.ledger().timestamp(),
