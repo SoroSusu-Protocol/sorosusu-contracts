@@ -13,10 +13,10 @@ pub mod yield_strategy_trait;
 pub mod juror_selection;
 // Stellar Protocol 21+ Passkey Authentication Support
 pub mod passkey_auth;
-// Issue #376: Adaptive Quorum for Global Protocol Governance
-pub mod adaptive_quorum;
-pub mod adaptive_quorum_fuzz_tests;
-pub mod grant_governance;
+// Issue #375: ZK-Privacy Blind-Matching Pool Logic
+pub mod zk_privacy;
+#[cfg(test)]
+pub mod zk_privacy_tests;
 
 // Issue #321: Maximum cycle duration cap (2 years in seconds) to prevent
 // integer overflow exploits and unbounded storage accumulation.
@@ -215,13 +215,13 @@ pub enum DataKey {
     EmergencyLoan(u64),                 // Emergency loan requests
     RepaymentSchedule(u64),            // Loan repayment schedules
     LendingMarketStats,               // Lending market statistics
-    // Issue #376: Adaptive Quorum for Global Protocol Governance
-    AdaptiveQuorumState(u64),         // Adaptive quorum state per proposal
-    AdaptiveQuorumSettings,           // Global adaptive quorum settings
-    ParticipationVelocity,            // Participation velocity tracking
-    VotingSnapshot(u64),              // Voting snapshot for audit (from grant_governance)
-    GrantSettlement(u64),             // Grant settlement records
-    ImpactCertificate(u128),          // Impact certificate metadata
+    // Issue #375: ZK-Privacy Blind-Matching Pool Logic
+    ZkShieldedPool,                   // Shielded pool state
+    ZkCommitment(BytesN<32>),         // Commitment by nullifier
+    ZkSpentNullifier(BytesN<32>),    // Spent nullifiers (double-spend prevention)
+    ZkSocialSlash(u64),              // Social slash records
+    ZkSocialSlashCount,              // Social slash counter
+    ZkNullifierCircle(BytesN<32>),   // Nullifier to circle mapping (encrypted)
 }
 
 // --- SEP-24 ANCHOR INTEGRATION DATA STRUCTURES ---
@@ -1454,6 +1454,33 @@ pub trait SoroSusuTrait {
     // Grant-Stream Matching Logic
     fn handle_grant_stream_match(env: Env, grant_stream_contract: Address, circle_id: u64, amount: i128);
     fn set_grant_stream_contract(env: Env, admin: Address, grant_stream: Address);
+
+    // Issue #375: ZK-Privacy Blind-Matching Pool Logic
+    fn init_shielded_pool(env: Env);
+    fn shielded_deposit(
+        env: Env,
+        user: Address,
+        amount: i128,
+        circle_id: u64,
+        commitment: BytesN<32>,
+        nullifier: BytesN<32>,
+    ) -> Result<BytesN<32>, u32>;
+    fn verify_blind_contribution(
+        env: Env,
+        user: Address,
+        circle_id: u64,
+        proof: zk_privacy::ZkProof,
+        nullifier: BytesN<32>,
+    ) -> Result<(), u32>;
+    fn social_slash_void_proof(
+        env: Env,
+        admin: Address,
+        circle_id: u64,
+        nullifier: BytesN<32>,
+        reason: Symbol,
+    ) -> Result<(), u32>;
+    fn get_shielded_balance(env: Env) -> i128;
+    fn is_nullifier_spent(env: Env, nullifier: BytesN<32>) -> bool;
 }
 
 // --- IMPLEMENTATION ---
@@ -5268,6 +5295,54 @@ mod fuzz_tests {
             panic!("Unauthorized: Only admin can set bridge targets");
         }
         env.storage().instance().set(&DataKey::LeaseFlowContract, &leaseflow);
+    }
+
+    // --- Issue #375: ZK-Privacy Blind-Matching Pool Logic ---
+
+    fn init_shielded_pool(env: Env) {
+        zk_privacy::ZkVerifierTrait::init_shielded_pool(env);
+    }
+
+    fn shielded_deposit(
+        env: Env,
+        user: Address,
+        amount: i128,
+        circle_id: u64,
+        commitment: BytesN<32>,
+        nullifier: BytesN<32>,
+    ) -> Result<BytesN<32>, u32> {
+        zk_privacy::ZkVerifierTrait::shielded_deposit(env, user, amount, circle_id, commitment, nullifier)
+            .map_err(|e| e as u32)
+    }
+
+    fn verify_blind_contribution(
+        env: Env,
+        user: Address,
+        circle_id: u64,
+        proof: zk_privacy::ZkProof,
+        nullifier: BytesN<32>,
+    ) -> Result<(), u32> {
+        zk_privacy::ZkVerifierTrait::verify_blind_contribution(env, user, circle_id, proof, nullifier)
+            .map_err(|e| e as u32)
+    }
+
+    fn social_slash_void_proof(
+        env: Env,
+        admin: Address,
+        circle_id: u64,
+        nullifier: BytesN<32>,
+        reason: Symbol,
+    ) -> Result<(), u32> {
+        zk_privacy::ZkVerifierTrait::social_slash_void_proof(env, admin, circle_id, nullifier, reason)
+            .map_err(|e| e as u32)
+    }
+
+    fn get_shielded_balance(env: Env) -> i128 {
+        zk_privacy::ZkVerifierTrait::get_shielded_balance(env)
+    }
+
+    fn is_nullifier_spent(env: Env, nullifier: BytesN<32>) -> bool {
+        zk_privacy::ZkVerifierTrait::is_nullifier_spent(env, nullifier)
     }
 
         // Verify session has 3 commits
