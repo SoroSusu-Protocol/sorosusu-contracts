@@ -1,4 +1,22 @@
-mod liquidity_buffer;
+#![cfg_attr(not(test), no_std)]
+use arbitrary::{Arbitrary, Unstructured};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, testutils::Address as TestAddress, token, Address, Env,
+    Symbol, Vec, Bytes, BytesN,
+};
+
+pub mod chat_metadata;
+pub mod dispute;
+pub mod yield_allocation_voting;
+pub mod yield_strategy_trait;
+// Issue #323: VRF-based juror selection for global dispute resolution.
+pub mod juror_selection;
+// Stellar Protocol 21+ Passkey Authentication Support
+pub mod passkey_auth;
+
+// Issue #321: Maximum cycle duration cap (2 years in seconds) to prevent
+// integer overflow exploits and unbounded storage accumulation.
+pub const MAX_CYCLE_DURATION: u64 = 2 * 365 * 24 * 60 * 60; // 63,072,000 seconds
 
 // --- DATA STRUCTURES ---
 
@@ -193,6 +211,79 @@ pub enum DataKey {
     EmergencyLoan(u64),                 // Emergency loan requests
     RepaymentSchedule(u64),            // Loan repayment schedules
     LendingMarketStats,               // Lending market statistics
+}
+
+// --- SEP-24 ANCHOR INTEGRATION DATA STRUCTURES ---
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AnchorStatus {
+    Active,
+    Inactive,
+    Suspended,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DepositStatus {
+    Pending,
+    Completed,
+    Failed,
+    Reversed,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AnchorInfo {
+    pub address: Address,
+    pub name: Symbol,
+    pub sep_version: Symbol, // SEP-24, SEP-6, etc.
+    pub status: AnchorStatus,
+    pub kyc_required: bool,
+    pub supported_tokens: Vec<Address>,
+    pub max_deposit_amount: u64,
+    pub daily_deposit_limit: u64,
+    pub registration_date: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AnchorDeposit {
+    pub anchor_address: Address,
+    pub user_address: Address,
+    pub circle_id: u64,
+    pub amount: u64,
+    pub token: Address,
+    pub fiat_reference: Symbol, // Bank transaction ID, M-Pesa reference, etc.
+    pub status: DepositStatus,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AnchorDepositConfig {
+    pub preferred_anchor: Address,
+    pub bank_account_hash: u64, // Hashed bank account details for privacy
+    pub mobile_money_provider: Symbol, // M-Pesa, MTN Mobile Money, etc.
+    pub mobile_number_hash: u64,
+    pub fiat_currency: Symbol, // USD, KES, GHS, etc.
+    pub auto_convert: bool, // Automatically convert crypto to fiat
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct UserBankPreference {
+    pub user: Address,
+    pub circle_id: u64,
+    pub payout_method: PayoutMethod,
+    pub anchor_config: Option<AnchorDepositConfig>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum PayoutMethod {
+    DirectToken,     // Default: receive tokens directly
+    DirectToBank,    // SEP-24: convert to fiat via anchor
 }
 
 // --- SEP-24 ANCHOR INTEGRATION DATA STRUCTURES ---
@@ -610,6 +701,38 @@ pub trait SoroSusuTrait {
     /// # Panics
     /// - `"circle is still active"` — the circle has not entered recovery state.
     fn claim_abandoned_funds(env: Env, user: Address, circle_id: u64);
+
+    // --- Passkey Authentication Functions ---
+
+    /// Register a new passkey for biometric authentication
+    fn register_passkey(
+        env: Env,
+        user: Address,
+        public_key: BytesN<33>,
+        credential_id: Bytes,
+        origin: Symbol,
+    ) -> Result<(), u32>;
+
+    /// Authenticate using a passkey signature (biometric)
+    fn authenticate_with_passkey(
+        env: Env,
+        user: Address,
+        signature: passkey_auth::PasskeySignature,
+        credential_id: Bytes,
+    ) -> Result<bool, u32>;
+
+    /// Generate a challenge for WebAuthn authentication
+    fn generate_challenge(env: Env, user: Address) -> Bytes;
+
+    /// Get user's authentication profile
+    fn get_auth_profile(env: Env, user: Address) -> Result<passkey_auth::UserAuthProfile, u32>;
+
+    /// Set preferred authentication method (Ed25519 or Passkey)
+    fn set_preferred_auth_method(
+        env: Env,
+        user: Address,
+        method: passkey_auth::AuthMethod,
+    ) -> Result<(), u32>;
 }
 
 // --- IMPLEMENTATION ---
@@ -3965,6 +4088,9 @@ pub struct VotingSession {
 
 #[cfg(test)]
 mod yield_allocation_voting_tests;
+
+#[cfg(test)]
+mod passkey_auth_tests;
 
 #[cfg(test)]
 mod fuzz_tests {
