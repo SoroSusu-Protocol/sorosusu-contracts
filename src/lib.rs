@@ -17,6 +17,11 @@ pub mod passkey_auth;
 pub mod aggregate_credit;
 // Reputation-as-a-Service adapter for partner protocol VIP gates.
 pub mod reliability_oracle;
+// Issue #418 & #409: Contribution Security and Merkle Proof Generator
+pub mod contribution_security;
+
+#[cfg(test)]
+mod contribution_security_tests;
 
 // Issue #321: Maximum cycle duration cap (2 years in seconds) to prevent
 // integer overflow exploits and unbounded storage accumulation.
@@ -810,6 +815,28 @@ pub trait SoroSusuTrait {
 
     /// Update reliability index (internal function)
     fn update_reliability_index(env: Env, user: Address, circle_id: u64, is_on_time: bool);
+
+    // --- ISSUE #418 & #409: CONTRIBUTION SECURITY AND MERKLE PROOFS ---
+
+    /// Generate Merkle proof for contribution verification (off-chain use)
+    fn generate_contribution_proof(
+        env: Env,
+        user: Address,
+        circle_id: u64,
+        round: u32,
+    ) -> Result<contribution_security::ContributionMerkleProof, u32>;
+
+    /// Verify contribution Merkle proof
+    fn verify_contribution_proof(
+        env: Env,
+        proof: contribution_security::ContributionMerkleProof,
+    ) -> Result<bool, u32>;
+
+    /// Get current Merkle root for a circle
+    fn get_circle_merkle_root(env: Env, circle_id: u64) -> Option<BytesN<32>>;
+
+    /// Get transaction state for debugging/admin purposes
+    fn get_transaction_state(env: Env, tx_id: BytesN<32>) -> Option<contribution_security::TransactionState>;
 }
 
 // --- IMPLEMENTATION ---
@@ -2164,7 +2191,12 @@ impl SoroSusuTrait for SoroSusu {
     /// The caller must have pre-approved the SoroSusu contract to transfer
     /// `circle.contribution_amount * rounds` tokens on their behalf
     /// (SEP-41 `approve`). The token transfer and contribution-history update
-    /// are executed atomically within this call.
+    /// are executed atomically within this call using secure transaction logic.
+    ///
+    /// # Security Features
+    /// - Atomic transaction with rollback capability
+    /// - Double-spend prevention via transaction tracking
+    /// - Automatic contribution proof generation
     ///
     /// # Panics
     /// - `"Circle not found"` — `circle_id` does not exist.
@@ -2174,12 +2206,12 @@ impl SoroSusuTrait for SoroSusu {
             panic!("Rounds must be greater than zero");
         }
 
-        let mut circle: CircleInfo = env.storage().instance()
+        let circle: CircleInfo = env.storage().instance()
             .get(&DataKey::Circle(circle_id))
             .unwrap_or_else(|| panic!("Circle not found"));
 
         let member_key = DataKey::Member(user.clone());
-        let mut member: Member = env.storage().instance()
+        let member: Member = env.storage().instance()
             .get(&member_key)
             .unwrap_or_else(|| panic!("Member not found"));
 
@@ -2187,28 +2219,56 @@ impl SoroSusuTrait for SoroSusu {
             panic!("Member not active");
         }
 
-        let current_time = env.ledger().timestamp();
-        let rounds_i128 = rounds as i128;
         let total_contribution = circle.contribution_amount
-            .checked_mul(rounds_i128)
+            .checked_mul(rounds as i128)
             .unwrap_or_else(|| panic!("Contribution overflow"));
 
+        // Start atomic transaction
+        let tx_id = contribution_security::ContributionSecurityTrait::start_contribution_transaction(
+            env.clone(),
+            user.clone(),
+            circle_id,
+            total_contribution as u64,
+            rounds,
+        ).unwrap_or_else(|e| panic!("Failed to start transaction: {:?}", e));
+
+        // Execute the token transfer
         let token_client = soroban_sdk::token::Client::new(&env, &circle.token);
         token_client.transfer(&user, &env.current_contract_address(), &total_contribution);
 
-        member.contribution_count = member.contribution_count
+        // Update contribution state
+        let current_time = env.ledger().timestamp();
+        let mut circle_mut = circle;
+        let mut member_mut = member;
+
+        member_mut.contribution_count = member_mut.contribution_count
             .checked_add(rounds)
             .unwrap_or_else(|| panic!("Contribution count overflow"));
-        member.last_contribution_time = current_time;
+        member_mut.last_contribution_time = current_time;
 
         let contribution_bit = 1u64
-            .checked_shl(member.index)
+            .checked_shl(member_mut.index)
             .unwrap_or_else(|| panic!("Member index overflow"));
-        circle.contribution_bitmap |= contribution_bit;
+        circle_mut.contribution_bitmap |= contribution_bit;
 
-        env.storage().instance().set(&member_key, &member);
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
-        env.storage().instance().set(&DataKey::Deposit(circle_id, user), &true);
+        // Update storage
+        env.storage().instance().set(&member_key, &member_mut);
+        env.storage().instance().set(&DataKey::Circle(circle_id), &circle_mut);
+        env.storage().instance().set(&DataKey::Deposit(circle_id, user.clone()), &true);
+
+        // Commit the atomic transaction
+        contribution_security::ContributionSecurityTrait::commit_contribution_transaction(
+            env.clone(),
+            tx_id,
+        ).unwrap_or_else(|e| {
+            // Rollback on failure
+            let _ = contribution_security::ContributionSecurityTrait::rollback_contribution_transaction(
+                env.clone(),
+                tx_id,
+                soroban_sdk::Symbol::short(&env, "commit_failed"),
+            );
+            panic!("Failed to commit transaction: {:?}", e);
+        });
     }
 
 
@@ -4676,6 +4736,40 @@ impl SoroSusuTrait for SoroSusu {
         }
         
         env.storage().instance().set(&DataKey::ReliabilityIndex(user), &ri);
+    }
+
+    // --- ISSUE #418 & #409: CONTRIBUTION SECURITY AND MERKLE PROOFS ---
+
+    fn generate_contribution_proof(
+        env: Env,
+        user: Address,
+        circle_id: u64,
+        round: u32,
+    ) -> Result<contribution_security::ContributionMerkleProof, u32> {
+        contribution_security::ContributionSecurityTrait::generate_contribution_proof(
+            env,
+            user,
+            circle_id,
+            round,
+        ).map_err(|e| e as u32)
+    }
+
+    fn verify_contribution_proof(
+        env: Env,
+        proof: contribution_security::ContributionMerkleProof,
+    ) -> Result<bool, u32> {
+        contribution_security::ContributionSecurityTrait::verify_contribution_proof(
+            env,
+            proof,
+        ).map_err(|e| e as u32)
+    }
+
+    fn get_circle_merkle_root(env: Env, circle_id: u64) -> Option<BytesN<32>> {
+        contribution_security::ContributionSecurityTrait::get_circle_merkle_root(env, circle_id)
+    }
+
+    fn get_transaction_state(env: Env, tx_id: BytesN<32>) -> Option<contribution_security::TransactionState> {
+        contribution_security::ContributionSecurityTrait::get_transaction_state(env, tx_id)
     }
 }
 
