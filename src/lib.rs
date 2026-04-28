@@ -13,6 +13,8 @@ pub mod yield_strategy_trait;
 pub mod juror_selection;
 // Stellar Protocol 21+ Passkey Authentication Support
 pub mod passkey_auth;
+// Issue #380: Hierarchical Susu-Aggregation for Institutional Lending
+pub mod aggregate_credit;
 
 // Issue #321: Maximum cycle duration cap (2 years in seconds) to prevent
 // integer overflow exploits and unbounded storage accumulation.
