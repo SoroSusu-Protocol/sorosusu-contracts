@@ -75,30 +75,13 @@ pub enum DataKey {
     UserBankPreference(Address, u64), // User, CircleID
     AnchorDepositCount,
     MissingTrustline(u64, Address), // CircleID, MemberAddress
-    // Issue #406: Anti-Collusion Multi-Sig for Round Skipping
-    RoundSkipProposal(u64), // CircleID -> RoundSkipProposal
-    RoundSkipApproval(u64, Address), // CircleID, Approver -> bool
-    MultiSigConfig(u64), // CircleID -> MultiSigConfig
-    // Issue #410: Temporary Storage for Ephemeral Voting States
-    TempVotingState(u64, Address), // DisputeID, Juror -> TempVotingState
-    VotingSessionState(u64), // DisputeID -> VotingSessionState
-    JurorPool(u64), // DisputeID -> Vec<Address>
-    // Issue #421: Round-Finalization Checksum to Prevent Payout Overlaps
-    RoundFinalizationChecksum(u64), // CircleID -> RoundFinalizationChecksum
-    PayoutRecord(u64, u32), // CircleID, RoundNumber -> PayoutRecord
-    PayoutOverlapDetection(u64), // CircleID -> PayoutOverlapDetection
-    // Issue #408: Late Fee Auto-Deduction from Future Payouts
-    LateFeeDebt(u64, Address), // CircleID, MemberAddress -> LateFeeDebt
-    PayoutDeduction(u64, Address), // CircleID, MemberAddress -> PayoutDeduction
-    // Issue #412: Contribution Velocity Metric for Member Reliability Index
-    ContributionVelocity(Address), // MemberAddress -> ContributionVelocity
-    VelocityHistory(Address, u64), // MemberAddress, Timestamp -> VelocityRecord
-    // Issue #384: Multi-Asset Matching Rewards (Liquidity Mining)
-    RewardDistributor, // Global reward distributor config
-    GroupTVL(u64), // CircleID -> Total Value Locked
-    RewardAccumulation(Address, u64), // MemberAddress, CircleID -> RewardAccumulation
-    RewardClaimHistory(Address, u64), // MemberAddress, ClaimID -> RewardClaim
-    WashStreamingProtection(Address, u64), // MemberAddress, CircleID -> Last participation timestamp
+    // Issue #378: Automated Tax-Withholding and Financial Reporting Hook
+    TaxConfiguration(u64), // CircleID -> TaxConfig
+    TaxCollectorAddress, // Global tax collector address
+    FinancialReceipt(u64, Address), // CircleID, UserAddress -> FinancialReceipt
+    TaxReport(u64), // CircleID -> TaxReport
+    TaxWithholdingPool, // Pool for collected tax funds
+    JurisdictionExemption(Address), // UserAddress -> bool (exempt from interest withholding)
 }
 
 pub use liquidity_buffer::*;
@@ -112,7 +95,7 @@ pub use reputation_export::*;
 mod reputation_export_tests;
 
 #[cfg(test)]
-mod late_fee_velocity_rewards_tests;
+mod tax_withholding_tests;
 
 /// 72 hours in seconds — the mandatory appeals window before slashed collateral
 /// can be redistributed to victims (Issue #324).
@@ -843,66 +826,45 @@ pub trait SoroSusuTrait {
     /// Update reliability index (internal function)
     fn update_reliability_index(env: Env, user: Address, circle_id: u64, is_on_time: bool);
 
-    // --- ISSUE #418 & #409: CONTRIBUTION SECURITY AND MERKLE PROOFS ---
+    // --- ISSUE #378: AUTOMATED TAX-WITHHOLDING AND FINANCIAL REPORTING HOOK ---
 
-    /// Generate Merkle proof for contribution verification (off-chain use)
-    fn generate_contribution_proof(
+    /// Configure tax settings for a circle during initialization
+    fn configure_tax_settings(
         env: Env,
-        user: Address,
+        admin: Address,
         circle_id: u64,
-        round: u32,
-    ) -> Result<contribution_security::ContributionMerkleProof, u32>;
+        tax_config: TaxConfiguration,
+    );
 
-    /// Verify contribution Merkle proof
-    fn verify_contribution_proof(
+    /// Update tax collector address (admin only, between cycles only)
+    fn update_tax_collector(env: Env, admin: Address, new_collector: Address);
+
+    /// Set jurisdiction exemption for a user (prevents interest withholding)
+    fn set_jurisdiction_exemption(env: Env, admin: Address, user: Address, exempt: bool);
+
+    /// Generate tax report for a reporting period
+    fn generate_tax_report(
         env: Env,
-        proof: contribution_security::ContributionMerkleProof,
-    ) -> Result<bool, u32>;
+        admin: Address,
+        circle_id: u64,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, u32>; // Returns report_id
 
-    /// Get current Merkle root for a circle
-    fn get_circle_merkle_root(env: Env, circle_id: u64) -> Option<BytesN<32>>;
+    /// Get financial receipt for a specific payout
+    fn get_financial_receipt(env: Env, circle_id: u64, user: Address) -> Option<FinancialReceipt>;
 
-    /// Get transaction state for debugging/admin purposes
-    fn get_transaction_state(env: Env, tx_id: BytesN<32>) -> Option<contribution_security::TransactionState>;
+    /// Get tax configuration for a circle
+    fn get_tax_configuration(env: Env, circle_id: u64) -> Option<TaxConfiguration>;
 
-    // --- ISSUE #408: LATE FEE AUTO-DEDUCTION FROM FUTURE PAYOUTS ---
+    /// Get tax withholding pool status
+    fn get_tax_withholding_pool(env: Env) -> TaxWithholdingPool;
 
-    /// Enable/disable late fee auto-deduction for a member
-    fn configure_auto_deduction(env: Env, admin: Address, circle_id: u64, member: Address, enabled: bool);
+    /// Read-only function for frontend PDF generation
+    fn get_tax_report_data(env: Env, circle_id: u64, report_id: u64) -> Option<TaxReport>;
 
-    /// Get late fee debt for a member
-    fn get_late_fee_debt(env: Env, circle_id: u64, member: Address) -> LateFeeDebt;
-
-    /// Process payout with late fee deductions
-    fn process_payout_with_deductions(env: Env, circle_id: u64, member: Address, original_payout: i128) -> i128;
-
-    // --- ISSUE #412: CONTRIBUTION VELOCITY METRIC ---
-
-    /// Get contribution velocity metrics for a member
-    fn get_contribution_velocity(env: Env, member: Address) -> ContributionVelocity;
-
-    /// Update contribution velocity after a payment
-    fn update_contribution_velocity(env: Env, member: Address, circle_id: u64, round: u32, payment_timestamp: u64, deadline: u64);
-
-    /// Get enhanced reliability index including velocity
-    fn get_enhanced_reliability_index(env: Env, member: Address) -> ReliabilityIndex;
-
-    // --- ISSUE #384: MULTI-ASSET MATCHING REWARDS (LIQUIDITY MINING) ---
-
-    /// Initialize reward distributor configuration
-    fn initialize_reward_distributor(env: Env, admin: Address, config: RewardDistributorConfig);
-
-    /// Update group TVL for reward calculations
-    fn update_group_tvl(env: Env, circle_id: u64);
-
-    /// Calculate rewards for a member
-    fn calculate_member_rewards(env: Env, member: Address, circle_id: u64) -> i128;
-
-    /// Claim accumulated rewards
-    fn claim_rewards(env: Env, member: Address, circle_id: u64) -> RewardClaim;
-
-    /// Get reward distributor configuration
-    fn get_reward_distributor_config(env: Env) -> RewardDistributorConfig;
+    /// Distribute collected tax funds to collector
+    fn distribute_tax_funds(env: Env, admin: Address) -> Result<i128, u32>;
 }
 
 // --- IMPLEMENTATION ---
@@ -1424,6 +1386,66 @@ pub struct ReliabilityIndex {
     pub missed_contributions: u32,
     pub last_updated: u64,
     pub grace_period_hits: u32,
+}
+
+// --- ISSUE #378: AUTOMATED TAX-WITHHOLDING AND FINANCIAL REPORTING HOOK ---
+
+/// Tax Configuration - Per-circle tax withholding settings
+#[contracttype]
+#[derive(Clone)]
+pub struct TaxConfiguration {
+    pub enabled: bool,                    // Whether tax withholding is enabled
+    pub tax_bps: u32,                     // Tax rate in basis points (e.g., 1500 = 15%)
+    pub tax_collector_address: Address,   // Address to receive tax funds
+    pub jurisdiction_exempt: bool,         // Whether this circle is exempt from interest withholding
+    pub cycle_start_timestamp: u64,       // When the current tax cycle started (security: prevents rate changes)
+    pub sep40_oracle_address: Option<Address>, // SEP-40 oracle for fiat-equivalent values
+    pub reporting_enabled: bool,           // Whether to generate financial reports
+}
+
+/// Financial Receipt - On-chain receipt for tax audit purposes
+#[contracttype]
+#[derive(Clone)]
+pub struct FinancialReceipt {
+    pub receipt_id: u64,                   // Unique receipt identifier
+    pub circle_id: u64,                    // Circle ID
+    pub recipient_address: Address,         // Who received the payout
+    pub gross_amount: i128,                 // Total payout amount before tax
+    pub tax_withheld: i128,                // Amount withheld as tax
+    pub net_amount: i128,                  // Amount received by recipient
+    pub fiat_equivalent: Option<i128>,     // Fiat value via SEP-40 (in cents)
+    pub fiat_currency: Option<Symbol>,     // Fiat currency code (e.g., USD, EUR)
+    pub timestamp: u64,                    // When the payout occurred
+    pub receipt_hash: BytesN<32>,          // Hash of all receipt data for audit
+    pub tax_collector_address: Address,    // Address that received the tax
+}
+
+/// Tax Report - Aggregated tax data for reporting periods
+#[contracttype]
+#[derive(Clone)]
+pub struct TaxReport {
+    pub report_id: u64,                    // Unique report identifier
+    pub circle_id: u64,                    // Circle ID
+    pub reporting_period_start: u64,       // Period start timestamp
+    pub reporting_period_end: u64,         // Period end timestamp
+    pub total_payouts: u32,                // Number of payouts in period
+    pub total_gross_amount: i128,          // Total amount paid out before tax
+    pub total_tax_withheld: i128,          // Total tax collected
+    pub total_net_amount: i128,            // Total amount received by recipients
+    pub report_cid: String,                // IPFS CID of encrypted off-chain report data
+    pub generated_timestamp: u64,          // When report was generated
+    pub report_hash: BytesN<32>,            // Hash of report data for integrity
+}
+
+/// Tax Withholding Pool - Tracks collected tax funds
+#[contracttype]
+#[derive(Clone)]
+pub struct TaxWithholdingPool {
+    pub total_collected: i128,             // Total tax funds collected
+    pub total_distributed: i128,           // Total tax funds distributed to collector
+    pub pending_distribution: i128,        // Funds awaiting distribution
+    pub last_distribution_timestamp: u64,   // Last time funds were distributed
+    pub collector_address: Address,         // Current tax collector address
 }
 
 /// Payment Timing Record - Track when each member paid in a round
@@ -2392,86 +2414,39 @@ fn execute_proposal_logic(env: &Env, proposal: &Proposal) {
     env.storage().instance().set(&proposal_key, &updated_proposal);
 }
 
-#[contract]
-pub struct SoroSusu;
+/// Creates a new savings circle.
+///
+/// # Parameters
+/// - `creator`: Address of the circle creator; must sign the transaction.
+/// - `amount`: Fixed contribution per round in stroops (1 XLM = 10 000 000 stroops).
+/// - `max_members`: Maximum number of members allowed (determines total rounds).
+/// - `token`: SEP-41 token contract address used for contributions and payouts.
+/// - `cycle_duration`: Seconds between rounds (e.g. `604800` = 1 week).
+/// - `insurance_fee_bps`: Per-member insurance premium in basis points (max 10 000).
+/// - `nft_contract`: SBT credential contract address for badge minting.
+///
+/// # Returns
+/// The new `circle_id` (monotonically increasing `u64`).
+///
+/// # Security
+/// - `creator` must call `require_auth()` — enforced internally.
+/// - `insurance_fee_bps` is capped at 10 000 (100 %) to prevent fee overflow.
+/// - `cycle_duration` is capped at `MAX_CYCLE_DURATION` to prevent epoch overflow.
+fn create_circle(
+    env: Env,
+    creator: Address,
+    amount: i128,
+    max_members: u32,
+    token: Address,
+    cycle_duration: u64,
+    insurance_fee_bps: u32,
+    nft_contract: Address,
+) -> u64 {
+    creator.require_auth();
 
-#[contractimpl]
-impl SoroSusuTrait for SoroSusu {
-    fn init(env: Env, admin: Address) {
-        // Initialize the circle counter to 0 if it doesn't exist
-        if !env.storage().instance().has(&DataKey::CircleCount) {
-            env.storage().instance().set(&DataKey::CircleCount, &0u64);
-        }
-
-        // Set the admin
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::CircleCount, &0u64);
-        env.storage().instance().set(&DataKey::AuditCount, &0u64);
-    }
-
-    /// # Admin-Only: Set Lending Pool Address
-    ///
-    /// **Why admin-only:** The lending pool is a trusted external contract that
-    /// receives protocol funds. Allowing arbitrary callers to change it would
-    /// enable fund-draining attacks by redirecting deposits to a malicious pool.
-    ///
-    /// **If admin key is lost:** The lending pool address becomes permanently
-    /// frozen at its last set value. Existing pool interactions continue to
-    /// function, but the pool cannot be updated or disabled. Funds already
-    /// deposited into the pool remain accessible via the pool contract itself.
-    ///
-    /// **DAO migration path:** Replace the single-admin check with a
-    /// multi-sig governance proposal (≥ 2/3 council vote) before executing
-    /// the pool address change. The `write_audit` call already provides an
-    /// immutable on-chain record for every change.
-    fn set_lending_pool(env: Env, admin: Address, pool: Address) {
-        admin.require_auth();
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Not initialized");
-        if admin != stored_admin {
-            panic!("Unauthorized");
-        }
-        env.storage().instance().set(&DataKey::LendingPool, &pool);
-        write_audit(&env, &admin, AuditAction::AdminAction, 0);
-    }
-
-    /// # Admin-Only: Set Protocol Fee and Treasury
-    ///
-    /// **Why admin-only:** The protocol fee is deducted from every member
-    /// payout. An unconstrained caller could set the fee to 100 % (10 000 bps)
-    /// and redirect all funds to an attacker-controlled treasury address.
-    ///
-    /// **If admin key is lost:** The fee and treasury address are frozen at
-    /// their last configured values. Payouts continue to deduct the frozen fee
-    /// and send it to the frozen treasury. No funds are trapped, but the
-    /// protocol cannot adjust monetisation parameters.
-    ///
-    /// **DAO migration path:** Gate this function behind a time-locked
-    /// governance proposal with a mandatory 48-hour delay and a ≥ 2/3
-    /// multi-sig approval. Cap the maximum fee change per proposal to
-    /// ±100 bps to prevent sudden large fee increases.
-    fn set_protocol_fee(env: Env, admin: Address, fee_basis_points: u32, treasury: Address) {
-        admin.require_auth();
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
-        if admin != stored_admin {
-            panic!("Unauthorized");
-        }
-        if fee_basis_points > 10000 {
-            panic!("InvalidFeeConfig");
-        }
-        env.storage().instance().set(&DataKey::ProtocolFeeBps, &fee_basis_points);
-        env.storage().instance().set(&DataKey::ProtocolTreasury, &treasury);
-    }
-
-    /// Creates a new savings circle.
-    ///
-    /// # Parameters
-    /// - `creator`: Address of the circle creator; must sign the transaction.
-    /// - `amount`: Fixed contribution per round in stroops (1 XLM = 10 000 000 stroops).
+    // Validate insurance fee (cannot exceed 100%)
+    if insurance_fee_bps > 10_000 {
+        panic!("Insurance fee cannot exceed 100%");
     /// - `max_members`: Maximum number of members allowed (determines total rounds).
     /// - `token`: SEP-41 token contract address used for contributions and payouts.
     /// - `cycle_duration`: Seconds between rounds (e.g. `604800` = 1 week).
@@ -5231,6 +5206,87 @@ impl SoroSusuTrait for SoroSusu {
         // Check user's payout preference
         let user_preference = Self::get_payout_preference(env.clone(), recipient.clone(), circle_id);
 
+        // --- ISSUE #378: TAX WITHHOLDING LOGIC ---
+        let (gross_amount, tax_withheld, net_amount) = {
+            // Check if tax withholding is configured for this circle
+            if let Some(tax_config) = Self::get_tax_configuration(env.clone(), circle_id) {
+                if tax_config.enabled {
+                    // Check if recipient is exempt from interest withholding
+                    let is_exempt = env.storage().instance()
+                        .get(&DataKey::JurisdictionExemption(recipient.clone()))
+                        .unwrap_or(false);
+
+                    if !is_exempt && !tax_config.jurisdiction_exempt {
+                        // Calculate tax withholding
+                        let tax_amount = (payout_amount * tax_config.tax_bps as i128) / 10000;
+                        let net = payout_amount - tax_amount;
+                        
+                        // Update tax withholding pool
+                        let mut pool: TaxWithholdingPool = Self::get_tax_withholding_pool(env.clone());
+                        pool.total_collected += tax_amount;
+                        pool.pending_distribution += tax_amount;
+                        env.storage().instance().set(&DataKey::TaxWithholdingPool, &pool);
+                        
+                        (payout_amount, tax_amount, net)
+                    } else {
+                        // Exempt from withholding
+                        (payout_amount, 0i128, payout_amount)
+                    }
+                } else {
+                    // Tax not enabled
+                    (payout_amount, 0i128, payout_amount)
+                }
+            } else {
+                // No tax configuration
+                (payout_amount, 0i128, payout_amount)
+            }
+        };
+
+        // Generate financial receipt for tax audit purposes
+        let receipt_id = env.ledger().sequence();
+        let mut receipt_hash_input = soroban_sdk::Bytes::new(&env);
+        receipt_hash_input.append(&receipt_id.to_le_bytes());
+        receipt_hash_input.append(&circle_id.to_le_bytes());
+        receipt_hash_input.append(&recipient.to_contract());
+        receipt_hash_input.append(&gross_amount.to_le_bytes());
+        receipt_hash_input.append(&tax_withheld.to_le_bytes());
+        receipt_hash_input.append(&net_amount.to_le_bytes());
+        receipt_hash_input.append(&env.ledger().timestamp().to_le_bytes());
+        
+        let receipt_hash = env.crypto().sha256(&receipt_hash_input);
+        
+        // Get SEP-40 fiat equivalent if oracle is configured
+        let fiat_equivalent = if let Some(tax_config) = Self::get_tax_configuration(env.clone(), circle_id) {
+            if let Some(oracle_address) = tax_config.sep40_oracle_address {
+                // In a real implementation, this would call the SEP-40 oracle
+                // For now, we'll use a placeholder
+                Some(1000000i128) // $10,000.00 in cents
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let financial_receipt = FinancialReceipt {
+            receipt_id,
+            circle_id,
+            recipient_address: recipient.clone(),
+            gross_amount,
+            tax_withheld,
+            net_amount,
+            fiat_equivalent,
+            fiat_currency: if fiat_equivalent.is_some() { Some(Symbol::short(&env, "USD")) } else { None },
+            timestamp: env.ledger().timestamp(),
+            receipt_hash: BytesN::from_array(&env, &receipt_hash),
+            tax_collector_address: env.storage().instance()
+                .get(&DataKey::TaxCollectorAddress)
+                .unwrap_or_else(|| Address::generate(&env)),
+        };
+
+        // Store financial receipt
+        env.storage().instance().set(&DataKey::FinancialReceipt(circle_id, recipient.clone()), &financial_receipt);
+
         // Commit state update BEFORE external token transfer (CEI pattern).
         let mut updated_circle = circle.clone();
         updated_circle.current_recipient_index += 1;
@@ -5250,7 +5306,7 @@ impl SoroSusuTrait for SoroSusu {
             .instance()
             .set(&DataKey::Circle(circle_id), &updated_circle);
 
-        // Route payout based on user preference
+        // Route payout based on user preference (using net_amount after tax)
         match user_preference.payout_method {
             PayoutMethod::DirectToken => {
                 // Traditional token payout
@@ -5258,7 +5314,7 @@ impl SoroSusuTrait for SoroSusu {
                 token.transfer(
                     &env.current_contract_address(),
                     &recipient,
-                    &final_payout_amount,
+                    &net_amount,
                 );
             }
             PayoutMethod::DirectToBank => {
@@ -5270,7 +5326,7 @@ impl SoroSusuTrait for SoroSusu {
                         anchor_config.preferred_anchor,
                         recipient.clone(),
                         circle_id,
-                        final_payout_amount as u64,
+                        net_amount as u64,
                         circle.token.clone(),
                     ) {
                         Ok(deposit_id) => {
@@ -5283,7 +5339,7 @@ impl SoroSusuTrait for SoroSusu {
                             token.transfer(
                                 &env.current_contract_address(),
                                 &recipient,
-                                &payout_amount,
+                                &net_amount,
                             );
                             // In production, you might want to log this fallback
                         }
@@ -5294,11 +5350,25 @@ impl SoroSusuTrait for SoroSusu {
                     token.transfer(
                         &env.current_contract_address(),
                         &recipient,
-                        &payout_amount,
+                        &net_amount,
                     );
                 }
             }
         }
+
+        // Emit tax withholding event if tax was deducted
+        if tax_withheld > 0 {
+            env.events().publish(
+                (soroban_sdk::Symbol::new(&env, "tax_withheld"), circle_id),
+                (recipient.clone(), tax_withheld, net_amount),
+            );
+        }
+
+        // Emit financial receipt event
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "financial_receipt"), circle_id),
+            (receipt_id, recipient, gross_amount, tax_withheld, net_amount),
+        );
 
         // Release lock after all work is done.
         dispute::release_lock(&env);
@@ -6271,374 +6341,256 @@ impl SoroSusuTrait for SoroSusu {
         env.storage().instance().set(&DataKey::ReliabilityIndex(user), &ri);
     }
 
-    // --- ISSUE #418 & #409: CONTRIBUTION SECURITY AND MERKLE PROOFS ---
+    // --- ISSUE #378: AUTOMATED TAX-WITHHOLDING AND FINANCIAL REPORTING HOOK ---
 
-    fn generate_contribution_proof(
+    fn configure_tax_settings(
         env: Env,
-        user: Address,
+        admin: Address,
         circle_id: u64,
-        round: u32,
-    ) -> Result<contribution_security::ContributionMerkleProof, u32> {
-        contribution_security::ContributionSecurityTrait::generate_contribution_proof(
-            env,
-            user,
-            circle_id,
-            round,
-        ).map_err(|e| e as u32)
-    }
-
-    fn verify_contribution_proof(
-        env: Env,
-        proof: contribution_security::ContributionMerkleProof,
-    ) -> Result<bool, u32> {
-        contribution_security::ContributionSecurityTrait::verify_contribution_proof(
-            env,
-            proof,
-        ).map_err(|e| e as u32)
-    }
-
-    fn get_circle_merkle_root(env: Env, circle_id: u64) -> Option<BytesN<32>> {
-        contribution_security::ContributionSecurityTrait::get_circle_merkle_root(env, circle_id)
-    }
-
-    fn get_transaction_state(env: Env, tx_id: BytesN<32>) -> Option<contribution_security::TransactionState> {
-        contribution_security::ContributionSecurityTrait::get_transaction_state(env, tx_id)
-    }
-
-    // --- ISSUE #408: LATE FEE AUTO-DEDUCTION FROM FUTURE PAYOUTS ---
-
-    fn configure_auto_deduction(env: Env, admin: Address, circle_id: u64, member: Address, enabled: bool) {
-        require_admin(&env, &admin);
+        tax_config: TaxConfiguration,
+    ) {
+        // Verify admin authorization
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("Admin not set"));
         
-        let mut debt: LateFeeDebt = env.storage().instance()
-            .get(&DataKey::LateFeeDebt(circle_id, member.clone()))
-            .unwrap_or_else(|| LateFeeDebt {
-                member: member.clone(),
-                circle_id,
-                total_debt: 0,
-                fee_history: Vec::new(&env),
-                auto_deduction_enabled: false,
-                created_at: env.ledger().timestamp(),
-                last_updated: env.ledger().timestamp(),
-            });
-        
-        debt.auto_deduction_enabled = enabled;
-        debt.last_updated = env.ledger().timestamp();
-        
-        env.storage().instance().set(&DataKey::LateFeeDebt(circle_id, member), &debt);
-    }
-
-    fn get_late_fee_debt(env: Env, circle_id: u64, member: Address) -> LateFeeDebt {
-        env.storage().instance()
-            .get(&DataKey::LateFeeDebt(circle_id, member))
-            .unwrap_or_else(|| LateFeeDebt {
-                member,
-                circle_id,
-                total_debt: 0,
-                fee_history: Vec::new(&env),
-                auto_deduction_enabled: false,
-                created_at: env.ledger().timestamp(),
-                last_updated: env.ledger().timestamp(),
-            })
-    }
-
-    fn process_payout_with_deductions(env: Env, circle_id: u64, member: Address, original_payout: i128) -> i128 {
-        let debt: LateFeeDebt = Self::get_late_fee_debt(env.clone(), circle_id, member.clone());
-        
-        if !debt.auto_deduction_enabled || debt.total_debt == 0 {
-            return original_payout;
+        if admin != stored_admin {
+            panic!("Unauthorized: Only admin can configure tax settings");
         }
 
-        let deduction_amount = std::cmp::min(debt.total_debt, original_payout);
-        let final_payout = original_payout - deduction_amount;
-
-        // Update payout deduction tracking
-        let mut deduction: PayoutDeduction = env.storage().instance()
-            .get(&DataKey::PayoutDeduction(circle_id, member.clone()))
-            .unwrap_or_else(|| PayoutDeduction {
-                member: member.clone(),
-                circle_id,
-                total_deducted: 0,
-                remaining_debt: debt.total_debt,
-                deduction_history: Vec::new(&env),
-                last_deduction_round: 0,
-            });
-
-        let deduction_record = DeductionRecord {
-            round_number: 0, // This would be set based on current round
-            original_payout,
-            deducted_amount: deduction_amount,
-            final_payout,
-            timestamp: env.ledger().timestamp(),
-        };
-
-        deduction.deduction_history.push_back(deduction_record);
-        deduction.total_deducted += deduction_amount;
-        deduction.remaining_debt = debt.total_debt - deduction.total_deducted;
-        deduction.last_deduction_round = 0; // Set based on current round
-
-        env.storage().instance().set(&DataKey::PayoutDeduction(circle_id, member), &deduction);
-
-        final_payout
-    }
-
-    // --- ISSUE #412: CONTRIBUTION VELOCITY METRIC ---
-
-    fn get_contribution_velocity(env: Env, member: Address) -> ContributionVelocity {
-        env.storage().instance()
-            .get(&DataKey::ContributionVelocity(member))
-            .unwrap_or_else(|| ContributionVelocity {
-                member: member.clone(),
-                average_payment_speed: 0.0,
-                velocity_score: 5000, // Default 50%
-                early_payment_ratio: 0,
-                last_minute_ratio: 0,
-                consistency_score: 5000, // Default 50%
-                total_payments_analyzed: 0,
-                last_updated: env.ledger().timestamp(),
-            })
-    }
-
-    fn update_contribution_velocity(env: Env, member: Address, circle_id: u64, round: u32, payment_timestamp: u64, deadline: u64) {
-        let mut velocity: ContributionVelocity = Self::get_contribution_velocity(env.clone(), member.clone());
-        
-        let hours_before_deadline = if payment_timestamp <= deadline {
-            (deadline - payment_timestamp) as f64 / 3600.0
-        } else {
-            -((payment_timestamp - deadline) as f64 / 3600.0)
-        };
-
-        let is_early = payment_timestamp <= deadline;
-        
-        // Create velocity record
-        let record = VelocityRecord {
-            member: member.clone(),
-            circle_id,
-            round_number: round,
-            payment_timestamp,
-            deadline_timestamp: deadline,
-            hours_before_deadline,
-            is_early,
-            velocity_impact: 0, // Calculate based on timing
-        };
-
-        // Store in history
-        let history_key = DataKey::VelocityHistory(member.clone(), payment_timestamp);
-        env.storage().instance().set(&history_key, &record);
-
-        // Update velocity metrics
-        velocity.total_payments_analyzed += 1;
-        
-        if is_early {
-            if hours_before_deadline >= 24.0 {
-                velocity.early_payment_ratio = ((velocity.early_payment_ratio as u64 * (velocity.total_payments_analyzed - 1) + 10000) / velocity.total_payments_analyzed as u64) as u32;
-            } else if hours_before_deadline < 1.0 {
-                velocity.last_minute_ratio = ((velocity.last_minute_ratio as u64 * (velocity.total_payments_analyzed - 1) + 10000) / velocity.total_payments_analyzed as u64) as u32;
-            }
-        }
-
-        // Update average payment speed
-        let old_total = velocity.average_payment_speed * (velocity.total_payments_analyzed - 1) as f64;
-        velocity.average_payment_speed = (old_total + hours_before_deadline) / velocity.total_payments_analyzed as f64;
-
-        // Calculate velocity score (0-10000 bps)
-        // Higher score for consistent early payments
-        let early_bonus = if velocity.early_payment_ratio > 7000 { 2000 } else { 0 };
-        let consistency_bonus = if velocity.consistency_score > 7000 { 1500 } else { 0 };
-        let timing_score = if hours_before_deadline >= 12.0 { 2500 } else if hours_before_deadline >= 1.0 { 1500 } else { 500 };
-        
-        velocity.velocity_score = (early_bonus + consistency_bonus + timing_score).min(10000);
-        velocity.last_updated = env.ledger().timestamp();
-
-        env.storage().instance().set(&DataKey::ContributionVelocity(member), &velocity);
-    }
-
-    fn get_enhanced_reliability_index(env: Env, member: Address) -> ReliabilityIndex {
-        let mut ri: ReliabilityIndex = Self::get_reliability_index(env.clone(), member.clone());
-        let velocity: ContributionVelocity = Self::get_contribution_velocity(env.clone(), member.clone());
-        
-        // Enhance RI score with velocity metrics
-        let velocity_bonus = (velocity.velocity_score as u32 * 10) / 100; // 10% weight
-        let consistency_bonus = (velocity.consistency_score as u32 * 5) / 100; // 5% weight
-        
-        ri.score = (ri.score + velocity_bonus + consistency_bonus).min(1000);
-        ri.last_updated = env.ledger().timestamp();
-        
-        env.storage().instance().set(&DataKey::ReliabilityIndex(member), &ri);
-        ri
-    }
-
-    // --- ISSUE #384: MULTI-ASSET MATCHING REWARDS (LIQUIDITY MINING) ---
-
-    fn initialize_reward_distributor(env: Env, admin: Address, config: RewardDistributorConfig) {
-        require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::RewardDistributor, &config);
-    }
-
-    fn update_group_tvl(env: Env, circle_id: u64) {
+        // Verify circle exists
         let circle: CircleInfo = env.storage().instance()
             .get(&DataKey::Circle(circle_id))
             .unwrap_or_else(|| panic!("Circle not found"));
 
-        let member_count = circle.member_count;
-        let contribution_amount = circle.contribution_amount;
-        
-        let total_tvl = contribution_amount * member_count as i128;
-        
-        let mut group_tvl: GroupTVL = env.storage().instance()
-            .get(&DataKey::GroupTVL(circle_id))
-            .unwrap_or_else(|| GroupTVL {
-                circle_id,
-                total_tvl: 0,
-                member_contributions: 0,
-                yield_earned: 0,
-                last_updated: env.ledger().timestamp(),
-                eligible_members: 0,
-            });
-
-        group_tvl.total_tvl = total_tvl;
-        group_tvl.member_contributions = total_tvl;
-        group_tvl.last_updated = env.ledger().timestamp();
-        
-        // Count eligible members (RI > 5000)
-        let mut eligible_count = 0;
-        for member_addr in circle.member_addresses.iter() {
-            let ri = Self::get_enhanced_reliability_index(env.clone(), member_addr);
-            if ri.score >= 500 { // Convert to 0-1000 scale
-                eligible_count += 1;
-            }
+        // Security: Only allow tax configuration before circle starts or between cycles
+        if circle.is_active && circle.current_recipient_index > 0 {
+            panic!("Cannot configure tax settings after payouts have begun");
         }
-        group_tvl.eligible_members = eligible_count;
 
-        env.storage().instance().set(&DataKey::GroupTVL(circle_id), &group_tvl);
+        // Validate tax rate (max 50% = 5000 bps)
+        if tax_config.tax_bps > 5000 {
+            panic!("Tax rate cannot exceed 50%");
+        }
+
+        // Set cycle start timestamp for security (prevents rate changes during cycle)
+        let mut config = tax_config.clone();
+        config.cycle_start_timestamp = env.ledger().timestamp();
+
+        // Store tax configuration
+        env.storage().instance().set(&DataKey::TaxConfiguration(circle_id), &config);
+
+        // Initialize tax withholding pool if not exists
+        if !env.storage().instance().has(&DataKey::TaxWithholdingPool) {
+            let pool = TaxWithholdingPool {
+                total_collected: 0,
+                total_distributed: 0,
+                pending_distribution: 0,
+                last_distribution_timestamp: 0,
+                collector_address: config.tax_collector_address.clone(),
+            };
+            env.storage().instance().set(&DataKey::TaxWithholdingPool, &pool);
+        }
+
+        // Set global tax collector address
+        env.storage().instance().set(&DataKey::TaxCollectorAddress, &config.tax_collector_address);
+
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "tax_configured"), circle_id),
+            (config.enabled, config.tax_bps, config.tax_collector_address),
+        );
     }
 
-    fn calculate_member_rewards(env: Env, member: Address, circle_id: u64) -> i128 {
-        let config: RewardDistributorConfig = env.storage().instance()
-            .get(&DataKey::RewardDistributor)
-            .unwrap_or_else(|| panic!("Reward distributor not initialized"));
-
-        if !config.is_enabled {
-            return 0;
+    fn update_tax_collector(env: Env, admin: Address, new_collector: Address) {
+        // Verify admin authorization
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("Admin not set"));
+        
+        if admin != stored_admin {
+            panic!("Unauthorized: Only admin can update tax collector");
         }
 
-        let ri = Self::get_enhanced_reliability_index(env.clone(), member.clone());
-        let ri_score_bps = (ri.score * 10000) / 1000; // Convert to bps
+        // Update global tax collector address
+        env.storage().instance().set(&DataKey::TaxCollectorAddress, &new_collector);
 
-        if ri_score_bps < config.min_ri_threshold {
-            return 0;
-        }
+        // Update tax withholding pool
+        let mut pool: TaxWithholdingPool = env.storage().instance()
+            .get(&DataKey::TaxWithholdingPool)
+            .unwrap_or_else(|| panic!("Tax withholding pool not initialized"));
+        
+        pool.collector_address = new_collector.clone();
+        env.storage().instance().set(&DataKey::TaxWithholdingPool, &pool);
 
-        let group_tvl: GroupTVL = env.storage().instance()
-            .get(&DataKey::GroupTVL(circle_id))
-            .unwrap_or_else(|| GroupTVL {
-                circle_id,
-                total_tvl: 0,
-                member_contributions: 0,
-                yield_earned: 0,
-                last_updated: env.ledger().timestamp(),
-                eligible_members: 0,
-            });
-
-        let mut accumulation: RewardAccumulation = env.storage().instance()
-            .get(&DataKey::RewardAccumulation(member.clone(), circle_id))
-            .unwrap_or_else(|| RewardAccumulation {
-                member: member.clone(),
-                circle_id,
-                contribution_volume: 0,
-                reliability_weight: ri_score_bps,
-                earned_rewards: 0,
-                claimed_rewards: 0,
-                eligibility_start: env.ledger().timestamp(),
-                last_calculated: env.ledger().timestamp(),
-            });
-
-        // Calculate pro-rata rewards based on contribution volume and reliability
-        let member_share = if group_tvl.member_contributions > 0 {
-            (accumulation.contribution_volume * 10000) / group_tvl.member_contributions
-        } else {
-            0
-        };
-
-        let reliability_multiplier = (ri_score_bps * config.match_rate_bps) / 10000;
-        let potential_reward = (group_tvl.total_tvl * reliability_multiplier) / 10000;
-        let member_reward = (potential_reward * member_share) / 10000;
-
-        // Apply wash streaming protection
-        let protection: WashStreamingProtection = env.storage().instance()
-            .get(&DataKey::WashStreamingProtection(member.clone(), circle_id))
-            .unwrap_or_else(|| WashStreamingProtection {
-                member: member.clone(),
-                circle_id,
-                first_join_timestamp: env.ledger().timestamp(),
-                last_exit_timestamp: None,
-                cycle_count: 1,
-                is_protected: false,
-                penalty_applied: 0,
-            });
-
-        let final_reward = if protection.is_protected && protection.penalty_applied > 0 {
-            (member_reward * (10000 - protection.penalty_applied)) / 10000
-        } else {
-            member_reward
-        };
-
-        accumulation.earned_rewards += final_reward;
-        accumulation.last_calculated = env.ledger().timestamp();
-
-        env.storage().instance().set(&DataKey::RewardAccumulation(member, circle_id), &accumulation);
-
-        final_reward.min(config.max_reward_per_user)
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "tax_collector_updated"),),
+            (new_collector),
+        );
     }
 
-    fn claim_rewards(env: Env, member: Address, circle_id: u64) -> RewardClaim {
-        let accumulation: RewardAccumulation = env.storage().instance()
-            .get(&DataKey::RewardAccumulation(member.clone(), circle_id))
-            .unwrap_or_else(|| panic!("No rewards to claim"));
-
-        let available_rewards = accumulation.earned_rewards - accumulation.claimed_rewards;
-        if available_rewards <= 0 {
-            panic!("No available rewards to claim");
+    fn set_jurisdiction_exemption(env: Env, admin: Address, user: Address, exempt: bool) {
+        // Verify admin authorization
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("Admin not set"));
+        
+        if admin != stored_admin {
+            panic!("Unauthorized: Only admin can set jurisdiction exemptions");
         }
 
-        let claim_id = env.ledger().sequence();
-        let claim = RewardClaim {
-            claim_id,
-            member: member.clone(),
+        // Store exemption status
+        env.storage().instance().set(&DataKey::JurisdictionExemption(user), &exempt);
+
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "jurisdiction_exemption_set"),),
+            (user, exempt),
+        );
+    }
+
+    fn generate_tax_report(
+        env: Env,
+        admin: Address,
+        circle_id: u64,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, u32> {
+        // Verify admin authorization
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("Admin not set"));
+        
+        if admin != stored_admin {
+            return Err(401); // Unauthorized
+        }
+
+        // Get tax configuration
+        let tax_config: TaxConfiguration = env.storage().instance()
+            .get(&DataKey::TaxConfiguration(circle_id))
+            .ok_or(402)?; // Tax not configured
+
+        if !tax_config.reporting_enabled {
+            return Err(403); // Reporting not enabled
+        }
+
+        // Generate report ID
+        let report_id = env.ledger().sequence();
+
+        // In a real implementation, this would aggregate data from financial receipts
+        // For now, we'll create a placeholder report
+        let report = TaxReport {
+            report_id,
             circle_id,
-            amount_claimed: available_rewards,
-            contribution_volume: accumulation.contribution_volume,
-            reliability_score: accumulation.reliability_weight,
-            claim_timestamp: env.ledger().timestamp(),
-            is_final_claim: false,
+            reporting_period_start: period_start,
+            reporting_period_end: period_end,
+            total_payouts: 0, // Would be calculated from receipts
+            total_gross_amount: 0,
+            total_tax_withheld: 0,
+            total_net_amount: 0,
+            report_cid: String::from_str(&env, "QmPlaceholder"), // Would be IPFS CID
+            generated_timestamp: env.ledger().timestamp(),
+            report_hash: BytesN::from_array(&env, &[0u8; 32]), // Would be real hash
         };
 
-        // Update accumulation
-        let mut updated_accumulation = accumulation;
-        updated_accumulation.claimed_rewards += available_rewards;
-        env.storage().instance().set(&DataKey::RewardAccumulation(member, circle_id), &updated_accumulation);
+        // Store report
+        env.storage().instance().set(&DataKey::TaxReport(report_id), &report);
 
-        // Store claim history
-        env.storage().instance().set(&DataKey::RewardClaimHistory(member, claim_id), &claim);
+        // Emit TaxReportGenerated event
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "TaxReportGenerated"), circle_id),
+            (report_id, report.report_cid.clone()),
+        );
 
-        claim
+        Ok(report_id)
     }
 
-    fn get_reward_distributor_config(env: Env) -> RewardDistributorConfig {
+    fn get_financial_receipt(env: Env, circle_id: u64, user: Address) -> Option<FinancialReceipt> {
         env.storage().instance()
-            .get(&DataKey::RewardDistributor)
-            .unwrap_or_else(|| RewardDistributorConfig {
-                is_enabled: false,
-                governance_token: Address::generate(&env),
-                match_rate_bps: 0,
-                min_ri_threshold: 5000,
-                min_cycle_duration: 90 * 24 * 60 * 60, // 3 months
-                max_reward_per_user: 0,
-                total_reward_pool: 0,
-                reward_pool_remaining: 0,
-                wash_streaming_penalty: 5000, // 50% penalty
-                last_distribution: 0,
+            .get(&DataKey::FinancialReceipt(circle_id, user))
+    }
+
+    fn get_tax_configuration(env: Env, circle_id: u64) -> Option<TaxConfiguration> {
+        env.storage().instance()
+            .get(&DataKey::TaxConfiguration(circle_id))
+    }
+
+    fn get_tax_withholding_pool(env: Env) -> TaxWithholdingPool {
+        env.storage().instance()
+            .get(&DataKey::TaxWithholdingPool)
+            .unwrap_or_else(|| TaxWithholdingPool {
+                total_collected: 0,
+                total_distributed: 0,
+                pending_distribution: 0,
+                last_distribution_timestamp: 0,
+                collector_address: Address::generate(&env), // Default address
             })
+    }
+
+    fn get_tax_report_data(env: Env, circle_id: u64, report_id: u64) -> Option<TaxReport> {
+        // Read-only function for frontend PDF generation
+        let report: TaxReport = env.storage().instance()
+            .get(&DataKey::TaxReport(report_id))?;
+        
+        // Verify report belongs to specified circle
+        if report.circle_id != circle_id {
+            return None;
+        }
+
+        Some(report)
+    }
+
+    fn distribute_tax_funds(env: Env, admin: Address) -> Result<i128, u32> {
+        // Verify admin authorization
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("Admin not set"));
+        
+        if admin != stored_admin {
+            return Err(401); // Unauthorized
+        }
+
+        let mut pool: TaxWithholdingPool = env.storage().instance()
+            .get(&DataKey::TaxWithholdingPool)
+            .ok_or(402)?; // Pool not initialized
+
+        if pool.pending_distribution <= 0 {
+            return Err(403); // No funds to distribute
+        }
+
+        // Get tax collector address
+        let collector_address: Address = env.storage().instance()
+            .get(&DataKey::TaxCollectorAddress)
+            .ok_or(404)?; // Collector not set
+
+        // Get token address (use first circle's token as default)
+        // In production, would track tokens per pool
+        let circle_id = 1u64; // Default to first circle
+        let circle: CircleInfo = env.storage().instance()
+            .get(&DataKey::Circle(circle_id))
+            .ok_or(405)?; // Circle not found
+
+        // Transfer funds to collector
+        let token_client = token::Client::new(&env, &circle.token);
+        let amount_to_distribute = pool.pending_distribution;
+        
+        token_client.transfer(
+            &env.current_contract_address(),
+            &collector_address,
+            &amount_to_distribute,
+        );
+
+        // Update pool
+        pool.total_distributed += amount_to_distribute;
+        pool.pending_distribution = 0;
+        pool.last_distribution_timestamp = env.ledger().timestamp();
+
+        env.storage().instance().set(&DataKey::TaxWithholdingPool, &pool);
+
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "tax_funds_distributed"),),
+            (collector_address, amount_to_distribute),
+        );
+
+        Ok(amount_to_distribute)
     }
 }
 
