@@ -17,6 +17,10 @@ pub mod passkey_auth;
 pub mod aggregate_credit;
 // Reputation-as-a-Service adapter for partner protocol VIP gates.
 pub mod reliability_oracle;
+// Issue #339: Vault balance invariant helpers for concurrent-payout fuzz tests.
+#[cfg(test)]
+pub mod vault_balance_invariant;
+
 // Issue #418 & #409: Contribution Security and Merkle Proof Generator
 pub mod contribution_security;
 // Issue #XXX: RI Formal Verification - Mathematical proof of Trust-Positive invariants
