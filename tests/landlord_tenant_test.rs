@@ -5,10 +5,12 @@
 //! LeaseInstance contract address ("Automated Rent-Drip"), and that the
 //! redirect is opt-in / cancellable / non-default.
 
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, token, Address, Env};
-use sorosusu_contracts::{
-    LeasePayoutConfig, SoroSusu, SoroSusuClient, SoroSusuTrait,
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::{Address as _, Ledger as _},
+    token, Address, Env,
 };
+use sorosusu_contracts::{LeasePayoutConfig, SoroSusu, SoroSusuClient};
 
 #[contract]
 pub struct MockNft;
