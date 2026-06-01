@@ -5,6 +5,7 @@ use sorosusu_contracts::{SoroSusu, SoroSusuClient, DataKey, CollateralStatus, Me
 #[test]
 fn test_collateral_required_for_high_value_circles() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
@@ -40,6 +41,7 @@ fn test_collateral_required_for_high_value_circles() {
 #[test]
 fn test_collateral_not_required_for_low_value_circles() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
@@ -74,6 +76,7 @@ fn test_collateral_not_required_for_low_value_circles() {
 #[test]
 fn test_stake_collateral() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
@@ -119,6 +122,7 @@ fn test_stake_collateral() {
 #[test]
 fn test_join_circle_requires_collateral() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
@@ -162,6 +166,7 @@ fn test_join_circle_requires_collateral() {
 #[test]
 fn test_mark_member_defaulted_and_slash_collateral() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
@@ -213,6 +218,7 @@ fn test_mark_member_defaulted_and_slash_collateral() {
 #[test]
 fn test_release_collateral_after_completion() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
@@ -270,6 +276,7 @@ fn test_release_collateral_after_completion() {
 #[test]
 fn test_insufficient_collateral_amount() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
@@ -310,6 +317,7 @@ fn test_insufficient_collateral_amount() {
 #[test]
 fn test_double_collateral_staking() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, SoroSusu);
     let client = SoroSusuClient::new(&env, &contract_id);
     
