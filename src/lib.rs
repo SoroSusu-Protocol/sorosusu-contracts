@@ -1,7 +1,8 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, token,
-    Address, Env, String, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, token, Address, Env,
+    String, Vec,
 };
 
 // --- ERROR CODES ---
@@ -50,7 +51,6 @@ pub enum Error {
 // --- CONSTANTS ---
 const REFERRAL_DISCOUNT_BPS: u32 = 500; // 5%
 const RATE_LIMIT_SECONDS: u64 = 300; // 5 minutes
-const LENIENCY_GRACE_PERIOD: u64 = 172800; // 48 hours in seconds
 const VOTING_PERIOD: u64 = 86400; // 24 hours voting period
 const MINIMUM_VOTING_PARTICIPATION: u32 = 50; // 50% minimum participation
 const SIMPLE_MAJORITY_THRESHOLD: u32 = 51; // 51% simple majority
@@ -60,7 +60,7 @@ const QUADRATIC_MAJORITY: u32 = 60; // 60% supermajority for rule changes
 const MAX_VOTE_WEIGHT: u32 = 100; // Maximum quadratic vote weight
 const MIN_GROUP_SIZE_FOR_QUADRATIC: u32 = 10; // Enable quadratic voting for groups >= 10 members
 const DEFAULT_COLLATERAL_BPS: u32 = 2000; // 20%
-const HIGH_VALUE_THRESHOLD: i128 = 1_000_000_0; // 1000 XLM (assuming 7 decimals)
+const HIGH_VALUE_THRESHOLD: i128 = 10_000_000; // 1000 XLM (assuming 7 decimals)
 
 // --- DATA STRUCTURES ---
 
@@ -313,10 +313,11 @@ pub trait LendingPoolTrait {
 
 // --- CONTRACT TRAIT ---
 
+#[allow(clippy::too_many_arguments)]
 pub trait SoroSusuTrait {
     fn init(env: Env, admin: Address);
     fn set_lending_pool(env: Env, admin: Address, pool: Address);
-    
+
     fn create_circle(
         env: Env,
         creator: Address,
@@ -328,26 +329,38 @@ pub trait SoroSusuTrait {
         nft_contract: Address,
     ) -> u64;
 
-    fn join_circle(env: Env, user: Address, circle_id: u64, tier_multiplier: u32, referrer: Option<Address>);
+    fn join_circle(
+        env: Env,
+        user: Address,
+        circle_id: u64,
+        tier_multiplier: u32,
+        referrer: Option<Address>,
+    );
     fn deposit(env: Env, user: Address, circle_id: u64);
-    
+
     fn finalize_round(env: Env, caller: Address, circle_id: u64);
     fn claim_pot(env: Env, user: Address, circle_id: u64);
-    
+
     fn trigger_insurance_coverage(env: Env, caller: Address, circle_id: u64, member: Address);
     fn eject_member(env: Env, caller: Address, circle_id: u64, member: Address);
-    
+
     fn pair_with_member(env: Env, user: Address, buddy_address: Address);
     fn set_safety_deposit(env: Env, user: Address, circle_id: u64, amount: i128);
-    
+
     // Leniency voting functions
     fn request_leniency(env: Env, requester: Address, circle_id: u64, reason: String);
-    fn vote_on_leniency(env: Env, voter: Address, circle_id: u64, requester: Address, vote: LeniencyVote);
+    fn vote_on_leniency(
+        env: Env,
+        voter: Address,
+        circle_id: u64,
+        requester: Address,
+        vote: LeniencyVote,
+    );
     fn finalize_leniency_vote(env: Env, caller: Address, circle_id: u64, requester: Address);
     fn get_leniency_request(env: Env, circle_id: u64, requester: Address) -> LeniencyRequest;
     fn get_social_capital(env: Env, member: Address, circle_id: u64) -> SocialCapital;
     fn get_leniency_stats(env: Env, circle_id: u64) -> LeniencyStats;
-    
+
     // Quadratic voting functions
     fn create_proposal(
         env: Env,
@@ -358,8 +371,14 @@ pub trait SoroSusuTrait {
         description: String,
         execution_data: String,
     ) -> u64;
-    
-    fn quadratic_vote(env: Env, voter: Address, proposal_id: u64, vote_weight: u32, vote_choice: QuadraticVoteChoice);
+
+    fn quadratic_vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        vote_weight: u32,
+        vote_choice: QuadraticVoteChoice,
+    );
     fn execute_proposal(env: Env, caller: Address, proposal_id: u64);
     fn get_proposal(env: Env, proposal_id: u64) -> Proposal;
     fn get_voting_power(env: Env, member: Address, circle_id: u64) -> VotingPower;
@@ -378,6 +397,7 @@ pub trait SoroSusuTrait {
 pub struct SoroSusu;
 
 #[contractimpl]
+#[allow(clippy::too_many_arguments)]
 impl SoroSusuTrait for SoroSusu {
     fn init(env: Env, admin: Address) {
         if !env.storage().instance().has(&DataKey::CircleCount) {
@@ -388,7 +408,11 @@ impl SoroSusuTrait for SoroSusu {
 
     fn set_lending_pool(env: Env, admin: Address, pool: Address) {
         admin.require_auth();
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
         if admin != stored_admin {
             panic!("Unauthorized");
         }
@@ -410,20 +434,32 @@ impl SoroSusuTrait for SoroSusu {
         // Rate limiting
         let current_time = env.ledger().timestamp();
         let rate_limit_key = DataKey::LastCreatedTimestamp(creator.clone());
-        if let Some(last_created) = env.storage().instance().get::<DataKey, u64>(&rate_limit_key) {
+        if let Some(last_created) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&rate_limit_key)
+        {
             if current_time < last_created + RATE_LIMIT_SECONDS {
                 panic!("Rate limit exceeded");
             }
         }
         env.storage().instance().set(&rate_limit_key, &current_time);
 
-        let mut circle_count: u64 = env.storage().instance().get(&DataKey::CircleCount).unwrap_or(0);
+        let mut circle_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircleCount)
+            .unwrap_or(0);
         circle_count += 1;
 
         // Calculate total cycle value and determine collateral requirements
         let total_cycle_value = amount * (max_members as i128);
         let requires_collateral = total_cycle_value >= HIGH_VALUE_THRESHOLD;
-        let collateral_bps = if requires_collateral { DEFAULT_COLLATERAL_BPS } else { 0 };
+        let collateral_bps = if requires_collateral {
+            DEFAULT_COLLATERAL_BPS
+        } else {
+            0
+        };
 
         let new_circle = CircleInfo {
             id: circle_count,
@@ -453,16 +489,30 @@ impl SoroSusuTrait for SoroSusu {
             total_cycle_value,
         };
 
-        env.storage().instance().set(&DataKey::Circle(circle_count), &new_circle);
-        env.storage().instance().set(&DataKey::CircleCount, &circle_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::Circle(circle_count), &new_circle);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircleCount, &circle_count);
 
         circle_count
     }
 
-    fn join_circle(env: Env, user: Address, circle_id: u64, tier_multiplier: u32, referrer: Option<Address>) {
+    fn join_circle(
+        env: Env,
+        user: Address,
+        circle_id: u64,
+        tier_multiplier: u32,
+        referrer: Option<Address>,
+    ) {
         user.require_auth();
 
-        let mut circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
+        let mut circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
         if circle.member_count >= circle.max_members {
             panic!("Circle is full");
         }
@@ -475,8 +525,9 @@ impl SoroSusuTrait for SoroSusu {
         // Check collateral requirement for high-value circles
         if circle.requires_collateral {
             let collateral_key = DataKey::CollateralVault(user.clone(), circle_id);
-            let collateral_info: Option<CollateralInfo> = env.storage().instance().get(&collateral_key);
-            
+            let collateral_info: Option<CollateralInfo> =
+                env.storage().instance().get(&collateral_key);
+
             match collateral_info {
                 Some(collateral) => {
                     if collateral.status != CollateralStatus::Staked {
@@ -500,7 +551,9 @@ impl SoroSusuTrait for SoroSusu {
 
         env.storage().instance().set(&member_key, &new_member);
         circle.member_count += 1;
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
+        env.storage()
+            .instance()
+            .set(&DataKey::Circle(circle_id), &circle);
 
         // Mint NFT
         let token_id = (circle_id as u128) << 64 | (new_member.index as u128);
@@ -511,9 +564,17 @@ impl SoroSusuTrait for SoroSusu {
     fn deposit(env: Env, user: Address, circle_id: u64) {
         user.require_auth();
 
-        let mut circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
+        let mut circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
         let member_key = DataKey::Member(user.clone());
-        let mut member: Member = env.storage().instance().get(&member_key).expect("Member not found");
+        let mut member: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
 
         if member.status != MemberStatus::Active {
             panic!("Member not active");
@@ -525,7 +586,7 @@ impl SoroSusuTrait for SoroSusu {
 
         // Check if late fee applies (considering grace periods)
         let effective_deadline = circle.grace_period_end.unwrap_or(circle.deadline_timestamp);
-        
+
         if current_time > effective_deadline {
             let base_penalty = (base_amount * circle.late_fee_bps as i128) / 10000;
             // Apply referral discount
@@ -537,10 +598,16 @@ impl SoroSusuTrait for SoroSusu {
                 }
             }
             penalty_amount = base_penalty - discount;
-            
-            let mut reserve: i128 = env.storage().instance().get(&DataKey::GroupReserve).unwrap_or(0);
+
+            let mut reserve: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::GroupReserve)
+                .unwrap_or(0);
             reserve += penalty_amount;
-            env.storage().instance().set(&DataKey::GroupReserve, &reserve);
+            env.storage()
+                .instance()
+                .set(&DataKey::GroupReserve, &reserve);
         }
 
         let insurance_fee = (base_amount * circle.insurance_fee_bps as i128) / 10000;
@@ -549,7 +616,8 @@ impl SoroSusuTrait for SoroSusu {
         let token_client = token::Client::new(&env, &circle.token);
 
         // Try transfer from user
-        let transfer_result = token_client.try_transfer(&user, &env.current_contract_address(), &total_amount);
+        let transfer_result =
+            token_client.try_transfer(&user, &env.current_contract_address(), &total_amount);
         let transfer_success = match transfer_result {
             Ok(inner) => inner.is_ok(),
             Err(_) => false,
@@ -561,7 +629,9 @@ impl SoroSusuTrait for SoroSusu {
                 let safety_key = DataKey::SafetyDeposit(buddy_addr.clone(), circle_id);
                 let safety_balance: i128 = env.storage().instance().get(&safety_key).unwrap_or(0);
                 if safety_balance >= total_amount {
-                    env.storage().instance().set(&safety_key, &(safety_balance - total_amount));
+                    env.storage()
+                        .instance()
+                        .set(&safety_key, &(safety_balance - total_amount));
                 } else {
                     panic!("Insufficient funds and buddy deposit");
                 }
@@ -577,16 +647,26 @@ impl SoroSusuTrait for SoroSusu {
         member.contribution_count += 1;
         member.last_contribution_time = current_time;
         circle.contribution_bitmap |= 1 << member.index;
-        
+
         env.storage().instance().set(&member_key, &member);
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
+        env.storage()
+            .instance()
+            .set(&DataKey::Circle(circle_id), &circle);
     }
 
     fn finalize_round(env: Env, caller: Address, circle_id: u64) {
         caller.require_auth();
-        let mut circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        let mut circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
         if caller != circle.creator && caller != stored_admin {
             panic!("Unauthorized");
         }
@@ -607,14 +687,22 @@ impl SoroSusuTrait for SoroSusu {
         // Set the current pot recipient (simplified: cycle through member indices)
         circle.current_pot_recipient = Some(circle.creator.clone()); // Will be set properly with member address storage
         circle.is_round_finalized = true;
-        env.storage().instance().set(&DataKey::ScheduledPayoutTime(circle_id), &payout_time);
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
+        env.storage()
+            .instance()
+            .set(&DataKey::ScheduledPayoutTime(circle_id), &payout_time);
+        env.storage()
+            .instance()
+            .set(&DataKey::Circle(circle_id), &circle);
     }
 
     fn claim_pot(env: Env, user: Address, circle_id: u64) {
         user.require_auth();
-        let mut circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
+        let mut circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
         if !circle.is_round_finalized {
             panic!("Round not finalized");
         }
@@ -627,7 +715,11 @@ impl SoroSusuTrait for SoroSusu {
             panic!("No recipient set");
         }
 
-        let scheduled_time: u64 = env.storage().instance().get(&DataKey::ScheduledPayoutTime(circle_id)).expect("Payout not scheduled");
+        let scheduled_time: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ScheduledPayoutTime(circle_id))
+            .expect("Payout not scheduled");
         if env.ledger().timestamp() < scheduled_time {
             panic!("Payout too early");
         }
@@ -639,18 +731,29 @@ impl SoroSusuTrait for SoroSusu {
         // Auto-release collateral if member has completed all contributions
         if circle.requires_collateral {
             let member_key = DataKey::Member(user.clone());
-            if let Some(member_info) = env.storage().instance().get::<DataKey, Member>(&member_key) {
+            if let Some(member_info) = env.storage().instance().get::<DataKey, Member>(&member_key)
+            {
                 if member_info.contribution_count >= circle.max_members {
                     let collateral_key = DataKey::CollateralVault(user.clone(), circle_id);
-                    if let Some(mut collateral_info) = env.storage().instance().get::<DataKey, CollateralInfo>(&collateral_key) {
+                    if let Some(mut collateral_info) = env
+                        .storage()
+                        .instance()
+                        .get::<DataKey, CollateralInfo>(&collateral_key)
+                    {
                         if collateral_info.status == CollateralStatus::Staked {
                             // Release collateral back to member
-                            token_client.transfer(&env.current_contract_address(), &user, &collateral_info.amount);
-                            
+                            token_client.transfer(
+                                &env.current_contract_address(),
+                                &user,
+                                &collateral_info.amount,
+                            );
+
                             // Update collateral status
                             collateral_info.status = CollateralStatus::Released;
                             collateral_info.release_timestamp = Some(env.ledger().timestamp());
-                            env.storage().instance().set(&collateral_key, &collateral_info);
+                            env.storage()
+                                .instance()
+                                .set(&collateral_key, &collateral_info);
                         }
                     }
                 }
@@ -664,14 +767,22 @@ impl SoroSusuTrait for SoroSusu {
         circle.current_recipient_index = (circle.current_recipient_index + 1) % circle.member_count;
         circle.current_pot_recipient = None; // Should be set in finalize_round
 
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
-        env.storage().instance().remove(&DataKey::ScheduledPayoutTime(circle_id));
+        env.storage()
+            .instance()
+            .set(&DataKey::Circle(circle_id), &circle);
+        env.storage()
+            .instance()
+            .remove(&DataKey::ScheduledPayoutTime(circle_id));
     }
 
     fn trigger_insurance_coverage(env: Env, caller: Address, circle_id: u64, member: Address) {
         caller.require_auth();
-        let mut circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
+        let mut circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
         if caller != circle.creator {
             panic!("Unauthorized");
         }
@@ -681,8 +792,12 @@ impl SoroSusuTrait for SoroSusu {
         }
 
         let member_key = DataKey::Member(member.clone());
-        let member_info: Member = env.storage().instance().get(&member_key).expect("Member not found");
-        
+        let member_info: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
+
         let amount_needed = circle.contribution_amount * member_info.tier_multiplier as i128;
         if circle.insurance_balance < amount_needed {
             panic!("Insufficient insurance");
@@ -692,20 +807,30 @@ impl SoroSusuTrait for SoroSusu {
         circle.insurance_balance -= amount_needed;
         circle.is_insurance_used = true;
 
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle);
+        env.storage()
+            .instance()
+            .set(&DataKey::Circle(circle_id), &circle);
     }
 
     fn eject_member(env: Env, caller: Address, circle_id: u64, member: Address) {
         caller.require_auth();
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
         if caller != circle.creator {
             panic!("Unauthorized");
         }
 
         let member_key = DataKey::Member(member.clone());
-        let mut member_info: Member = env.storage().instance().get(&member_key).expect("Member not found");
-        
+        let mut member_info: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
+
         if member_info.status == MemberStatus::Ejected {
             panic!("Already ejected");
         }
@@ -721,16 +846,24 @@ impl SoroSusuTrait for SoroSusu {
     fn pair_with_member(env: Env, user: Address, buddy_address: Address) {
         user.require_auth();
         let user_key = DataKey::Member(user.clone());
-        let mut user_info: Member = env.storage().instance().get(&user_key).expect("Member not found");
-        
+        let mut user_info: Member = env
+            .storage()
+            .instance()
+            .get(&user_key)
+            .expect("Member not found");
+
         user_info.buddy = Some(buddy_address);
         env.storage().instance().set(&user_key, &user_info);
     }
 
     fn set_safety_deposit(env: Env, user: Address, circle_id: u64, amount: i128) {
         user.require_auth();
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
         let token_client = token::Client::new(&env, &circle.token);
         token_client.transfer(&user, &env.current_contract_address(), &amount);
 
@@ -745,9 +878,17 @@ impl SoroSusuTrait for SoroSusu {
     fn request_leniency(env: Env, requester: Address, circle_id: u64, reason: String) {
         requester.require_auth();
 
-        let _circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
+        let _circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
         let member_key = DataKey::Member(requester.clone());
-        let member_info: Member = env.storage().instance().get(&member_key).expect("Member not found");
+        let member_info: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
 
         if member_info.status != MemberStatus::Active {
             panic!("Member not active");
@@ -755,7 +896,11 @@ impl SoroSusuTrait for SoroSusu {
 
         // Check if there's already a pending request
         let request_key = DataKey::LeniencyRequest(circle_id, requester.clone());
-        if let Some(existing_request) = env.storage().instance().get::<DataKey, LeniencyRequest>(&request_key) {
+        if let Some(existing_request) = env
+            .storage()
+            .instance()
+            .get::<DataKey, LeniencyRequest>(&request_key)
+        {
             if existing_request.status == LeniencyRequestStatus::Pending {
                 panic!("Leniency request already pending");
             }
@@ -781,23 +926,41 @@ impl SoroSusuTrait for SoroSusu {
 
         // Update leniency stats
         let stats_key = DataKey::LeniencyStats(circle_id);
-        let mut stats: LeniencyStats = env.storage().instance().get(&stats_key).unwrap_or(LeniencyStats {
-            total_requests: 0,
-            approved_requests: 0,
-            rejected_requests: 0,
-            expired_requests: 0,
-            average_participation: 0,
-        });
+        let mut stats: LeniencyStats =
+            env.storage()
+                .instance()
+                .get(&stats_key)
+                .unwrap_or(LeniencyStats {
+                    total_requests: 0,
+                    approved_requests: 0,
+                    rejected_requests: 0,
+                    expired_requests: 0,
+                    average_participation: 0,
+                });
         stats.total_requests += 1;
         env.storage().instance().set(&stats_key, &stats);
     }
 
-    fn vote_on_leniency(env: Env, voter: Address, circle_id: u64, requester: Address, vote: LeniencyVote) {
+    fn vote_on_leniency(
+        env: Env,
+        voter: Address,
+        circle_id: u64,
+        requester: Address,
+        vote: LeniencyVote,
+    ) {
         voter.require_auth();
 
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
         let voter_key = DataKey::Member(voter.clone());
-        let voter_info: Member = env.storage().instance().get(&voter_key).expect("Voter not found");
+        let voter_info: Member = env
+            .storage()
+            .instance()
+            .get(&voter_key)
+            .expect("Voter not found");
 
         if voter_info.status != MemberStatus::Active {
             panic!("Voter not active");
@@ -808,7 +971,10 @@ impl SoroSusuTrait for SoroSusu {
         }
 
         let request_key = DataKey::LeniencyRequest(circle_id, requester.clone());
-        let mut request: LeniencyRequest = env.storage().instance().get(&request_key)
+        let mut request: LeniencyRequest = env
+            .storage()
+            .instance()
+            .get(&request_key)
             .expect("Leniency request not found");
 
         if request.status != LeniencyRequestStatus::Pending {
@@ -839,30 +1005,38 @@ impl SoroSusuTrait for SoroSusu {
 
         // Update social capital
         let social_capital_key = DataKey::SocialCapital(voter.clone(), circle_id);
-        let mut social_capital: SocialCapital = env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
-            member: voter.clone(),
-            circle_id,
-            leniency_given: 0,
-            leniency_received: 0,
-            voting_participation: 0,
-            trust_score: 50, // Start with neutral score
-        });
+        let mut social_capital: SocialCapital = env
+            .storage()
+            .instance()
+            .get(&social_capital_key)
+            .unwrap_or(SocialCapital {
+                member: voter.clone(),
+                circle_id,
+                leniency_given: 0,
+                leniency_received: 0,
+                voting_participation: 0,
+                trust_score: 50, // Start with neutral score
+            });
         social_capital.voting_participation += 1;
-        
+
         // Update trust score based on voting patterns
         if vote == LeniencyVote::Approve {
             social_capital.leniency_given += 1;
-            social_capital.trust_score = (social_capital.trust_score + 2).min(100); // Increase trust score
+            social_capital.trust_score = (social_capital.trust_score + 2).min(100);
+        // Increase trust score
         } else {
-            social_capital.trust_score = (social_capital.trust_score - 1).max(0); // Decrease trust score
+            social_capital.trust_score = social_capital.trust_score.saturating_sub(1);
+            // Decrease trust score
         }
-        
-        env.storage().instance().set(&social_capital_key, &social_capital);
+
+        env.storage()
+            .instance()
+            .set(&social_capital_key, &social_capital);
 
         // Check if voting should be finalized early (if majority reached)
-        let total_possible_votes = (circle.member_count - 1) as u32; // Exclude requester
+        let total_possible_votes = circle.member_count - 1; // Exclude requester
         let votes_needed_for_majority = (total_possible_votes * SIMPLE_MAJORITY_THRESHOLD) / 100;
-        
+
         if request.approve_votes >= votes_needed_for_majority {
             request.status = LeniencyRequestStatus::Approved;
             SoroSusu::finalize_leniency_vote_internal(&env, &circle_id, &requester, &mut request);
@@ -876,10 +1050,17 @@ impl SoroSusuTrait for SoroSusu {
     fn finalize_leniency_vote(env: Env, caller: Address, circle_id: u64, requester: Address) {
         caller.require_auth();
 
-        let _circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
+        let _circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
         let request_key = DataKey::LeniencyRequest(circle_id, requester.clone());
-        let mut request: LeniencyRequest = env.storage().instance().get(&request_key)
+        let mut request: LeniencyRequest = env
+            .storage()
+            .instance()
+            .get(&request_key)
             .expect("Leniency request not found");
 
         if request.status != LeniencyRequestStatus::Pending {
@@ -899,30 +1080,39 @@ impl SoroSusuTrait for SoroSusu {
 
     fn get_leniency_request(env: Env, circle_id: u64, requester: Address) -> LeniencyRequest {
         let request_key = DataKey::LeniencyRequest(circle_id, requester);
-        env.storage().instance().get(&request_key).expect("Leniency request not found")
+        env.storage()
+            .instance()
+            .get(&request_key)
+            .expect("Leniency request not found")
     }
 
     fn get_social_capital(env: Env, member: Address, circle_id: u64) -> SocialCapital {
         let social_capital_key = DataKey::SocialCapital(member.clone(), circle_id);
-        env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
-            member,
-            circle_id,
-            leniency_given: 0,
-            leniency_received: 0,
-            voting_participation: 0,
-            trust_score: 50,
-        })
+        env.storage()
+            .instance()
+            .get(&social_capital_key)
+            .unwrap_or(SocialCapital {
+                member,
+                circle_id,
+                leniency_given: 0,
+                leniency_received: 0,
+                voting_participation: 0,
+                trust_score: 50,
+            })
     }
 
     fn get_leniency_stats(env: Env, circle_id: u64) -> LeniencyStats {
         let stats_key = DataKey::LeniencyStats(circle_id);
-        env.storage().instance().get(&stats_key).unwrap_or(LeniencyStats {
-            total_requests: 0,
-            approved_requests: 0,
-            rejected_requests: 0,
-            expired_requests: 0,
-            average_participation: 0,
-        })
+        env.storage()
+            .instance()
+            .get(&stats_key)
+            .unwrap_or(LeniencyStats {
+                total_requests: 0,
+                approved_requests: 0,
+                rejected_requests: 0,
+                expired_requests: 0,
+                average_participation: 0,
+            })
     }
 
     // --- QUADRATIC VOTING IMPLEMENTATION ---
@@ -938,21 +1128,33 @@ impl SoroSusuTrait for SoroSusu {
     ) -> u64 {
         proposer.require_auth();
 
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
         if !circle.quadratic_voting_enabled {
             panic!("Quadratic voting not enabled for this circle");
         }
 
         let member_key = DataKey::Member(proposer.clone());
-        let member_info: Member = env.storage().instance().get(&member_key).expect("Member not found");
+        let member_info: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
 
         if member_info.status != MemberStatus::Active {
             panic!("Member not active");
         }
 
         let current_time = env.ledger().timestamp();
-        let mut proposal_count: u64 = env.storage().instance().get(&DataKey::CircleCount).unwrap_or(0);
+        let mut proposal_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircleCount)
+            .unwrap_or(0);
         proposal_count += 1;
 
         let new_proposal = Proposal {
@@ -973,34 +1175,51 @@ impl SoroSusuTrait for SoroSusu {
             execution_data,
         };
 
-        env.storage().instance().set(&DataKey::Proposal(proposal_count), &new_proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_count), &new_proposal);
 
         // Update circle proposal count
         let mut circle_info = circle;
         circle_info.proposal_count += 1;
-        env.storage().instance().set(&DataKey::Circle(circle_id), &circle_info);
+        env.storage()
+            .instance()
+            .set(&DataKey::Circle(circle_id), &circle_info);
 
         // Update proposal stats
         let stats_key = DataKey::ProposalStats(circle_id);
-        let mut stats: ProposalStats = env.storage().instance().get(&stats_key).unwrap_or(ProposalStats {
-            total_proposals: 0,
-            approved_proposals: 0,
-            rejected_proposals: 0,
-            executed_proposals: 0,
-            average_participation: 0,
-            average_voting_time: 0,
-        });
+        let mut stats: ProposalStats =
+            env.storage()
+                .instance()
+                .get(&stats_key)
+                .unwrap_or(ProposalStats {
+                    total_proposals: 0,
+                    approved_proposals: 0,
+                    rejected_proposals: 0,
+                    executed_proposals: 0,
+                    average_participation: 0,
+                    average_voting_time: 0,
+                });
         stats.total_proposals += 1;
         env.storage().instance().set(&stats_key, &stats);
 
         proposal_count
     }
 
-    fn quadratic_vote(env: Env, voter: Address, proposal_id: u64, vote_weight: u32, vote_choice: QuadraticVoteChoice) {
+    fn quadratic_vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        vote_weight: u32,
+        vote_choice: QuadraticVoteChoice,
+    ) {
         voter.require_auth();
 
         let proposal_key = DataKey::Proposal(proposal_id);
-        let mut proposal: Proposal = env.storage().instance().get(&proposal_key)
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&proposal_key)
             .expect("Proposal not found");
 
         if proposal.status != ProposalStatus::Active {
@@ -1022,7 +1241,10 @@ impl SoroSusuTrait for SoroSusu {
 
         // Get voting power
         let voting_power_key = DataKey::VotingPower(voter.clone(), proposal.circle_id);
-        let voting_power: VotingPower = env.storage().instance().get(&voting_power_key)
+        let voting_power: VotingPower = env
+            .storage()
+            .instance()
+            .get(&voting_power_key)
             .expect("Voting power not calculated");
 
         if vote_weight > MAX_VOTE_WEIGHT {
@@ -1031,7 +1253,7 @@ impl SoroSusuTrait for SoroSusu {
 
         // Calculate quadratic voting cost: weight^2
         let voting_cost = (vote_weight as u64) * (vote_weight as u64);
-        
+
         if voting_cost > voting_power.quadratic_power {
             panic!("Insufficient voting power");
         }
@@ -1065,7 +1287,11 @@ impl SoroSusuTrait for SoroSusu {
 
         // Check quorum
         let circle_key = DataKey::Circle(proposal.circle_id);
-        let circle: CircleInfo = env.storage().instance().get(&circle_key).expect("Circle not found");
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&circle_key)
+            .expect("Circle not found");
         let required_quorum = (circle.member_count * QUADRATIC_QUORUM) / 100;
         proposal.quorum_met = proposal.total_voting_power >= required_quorum as u64;
 
@@ -1076,7 +1302,10 @@ impl SoroSusuTrait for SoroSusu {
         caller.require_auth();
 
         let proposal_key = DataKey::Proposal(proposal_id);
-        let mut proposal: Proposal = env.storage().instance().get(&proposal_key)
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&proposal_key)
             .expect("Proposal not found");
 
         if proposal.status != ProposalStatus::Active {
@@ -1096,32 +1325,37 @@ impl SoroSusuTrait for SoroSusu {
 
         // Calculate result
         let total_votes = proposal.for_votes + proposal.against_votes;
-        if total_votes == 0 {
-            proposal.status = ProposalStatus::Rejected;
+        let approval_percentage = proposal
+            .for_votes
+            .checked_mul(100)
+            .and_then(|v| v.checked_div(total_votes))
+            .unwrap_or(0);
+        if approval_percentage >= QUADRATIC_MAJORITY as u64 {
+            proposal.status = ProposalStatus::Approved;
+
+            // Execute the proposal based on type
+            SoroSusu::execute_proposal_logic(&env, &proposal);
+            proposal.status = ProposalStatus::Executed;
         } else {
-            let approval_percentage = (proposal.for_votes * 100) / total_votes;
-            if approval_percentage >= QUADRATIC_MAJORITY as u64 {
-                proposal.status = ProposalStatus::Approved;
-                
-                // Execute the proposal based on type
-                SoroSusu::execute_proposal_logic(&env, &proposal);
-            } else {
-                proposal.status = ProposalStatus::Rejected;
-            }
+            proposal.status = ProposalStatus::Rejected;
         }
 
         env.storage().instance().set(&proposal_key, &proposal);
 
         // Update stats
         let stats_key = DataKey::ProposalStats(proposal.circle_id);
-        let mut stats: ProposalStats = env.storage().instance().get(&stats_key).unwrap_or(ProposalStats {
-            total_proposals: 0,
-            approved_proposals: 0,
-            rejected_proposals: 0,
-            executed_proposals: 0,
-            average_participation: 0,
-            average_voting_time: 0,
-        });
+        let mut stats: ProposalStats =
+            env.storage()
+                .instance()
+                .get(&stats_key)
+                .unwrap_or(ProposalStats {
+                    total_proposals: 0,
+                    approved_proposals: 0,
+                    rejected_proposals: 0,
+                    executed_proposals: 0,
+                    average_participation: 0,
+                    average_voting_time: 0,
+                });
 
         match proposal.status {
             ProposalStatus::Approved => stats.approved_proposals += 1,
@@ -1137,37 +1371,46 @@ impl SoroSusuTrait for SoroSusu {
 
     fn get_proposal(env: Env, proposal_id: u64) -> Proposal {
         let proposal_key = DataKey::Proposal(proposal_id);
-        env.storage().instance().get(&proposal_key).expect("Proposal not found")
+        env.storage()
+            .instance()
+            .get(&proposal_key)
+            .expect("Proposal not found")
     }
 
     fn get_voting_power(env: Env, member: Address, circle_id: u64) -> VotingPower {
         let voting_power_key = DataKey::VotingPower(member.clone(), circle_id);
-        env.storage().instance().get(&voting_power_key).unwrap_or(VotingPower {
-            member,
-            circle_id,
-            token_balance: 0,
-            quadratic_power: 0,
-            last_updated: 0,
-        })
+        env.storage()
+            .instance()
+            .get(&voting_power_key)
+            .unwrap_or(VotingPower {
+                member,
+                circle_id,
+                token_balance: 0,
+                quadratic_power: 0,
+                last_updated: 0,
+            })
     }
 
     fn get_proposal_stats(env: Env, circle_id: u64) -> ProposalStats {
         let stats_key = DataKey::ProposalStats(circle_id);
-        env.storage().instance().get(&stats_key).unwrap_or(ProposalStats {
-            total_proposals: 0,
-            approved_proposals: 0,
-            rejected_proposals: 0,
-            executed_proposals: 0,
-            average_participation: 0,
-            average_voting_time: 0,
-        })
+        env.storage()
+            .instance()
+            .get(&stats_key)
+            .unwrap_or(ProposalStats {
+                total_proposals: 0,
+                approved_proposals: 0,
+                rejected_proposals: 0,
+                executed_proposals: 0,
+                average_participation: 0,
+                average_voting_time: 0,
+            })
     }
 
     fn update_voting_power(env: Env, member: Address, circle_id: u64, token_balance: i128) {
         // Calculate quadratic voting power as sqrt(token_balance)
         // We use integer approximation: sqrt(x) ≈ x / (sqrt(x) + 1) for simplicity
         // In production, you'd use a proper sqrt implementation
-        
+
         let quadratic_power = if token_balance > 0 {
             // Simple approximation of square root for demonstration
             // In practice, you'd use a more accurate method
@@ -1185,28 +1428,39 @@ impl SoroSusuTrait for SoroSusu {
             last_updated: env.ledger().timestamp(),
         };
 
-        env.storage().instance().set(&DataKey::VotingPower(member, circle_id), &voting_power);
+        env.storage()
+            .instance()
+            .set(&DataKey::VotingPower(member, circle_id), &voting_power);
     }
 
     fn stake_collateral(env: Env, user: Address, circle_id: u64, amount: i128) {
         user.require_auth();
-        
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        
+
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+
         if !circle.requires_collateral {
             panic!("Collateral not required for this circle");
         }
 
         let collateral_key = DataKey::CollateralVault(user.clone(), circle_id);
-        
+
         // Check if collateral already staked
-        if let Some(_collateral) = env.storage().instance().get::<DataKey, CollateralInfo>(&collateral_key) {
+        if let Some(_collateral) = env
+            .storage()
+            .instance()
+            .get::<DataKey, CollateralInfo>(&collateral_key)
+        {
             panic!("Collateral already staked");
         }
 
         // Calculate required collateral amount
-        let required_collateral = (circle.total_cycle_value * circle.collateral_bps as i128) / 10000;
-        
+        let required_collateral =
+            (circle.total_cycle_value * circle.collateral_bps as i128) / 10000;
+
         if amount < required_collateral {
             panic!("Insufficient collateral amount");
         }
@@ -1225,21 +1479,34 @@ impl SoroSusuTrait for SoroSusu {
             release_timestamp: None,
         };
 
-        env.storage().instance().set(&collateral_key, &collateral_info);
+        env.storage()
+            .instance()
+            .set(&collateral_key, &collateral_info);
     }
 
     fn slash_collateral(env: Env, caller: Address, circle_id: u64, member: Address) {
         caller.require_auth();
-        
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
-        
+
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+
         if caller != circle.creator && caller != stored_admin {
             panic!("Unauthorized");
         }
 
         let collateral_key = DataKey::CollateralVault(member.clone(), circle_id);
-        let mut collateral_info: CollateralInfo = env.storage().instance().get(&collateral_key)
+        let mut collateral_info: CollateralInfo = env
+            .storage()
+            .instance()
+            .get(&collateral_key)
             .expect("Collateral not staked");
 
         if collateral_info.status != CollateralStatus::Staked {
@@ -1248,8 +1515,12 @@ impl SoroSusuTrait for SoroSusu {
 
         // Check if member is defaulted
         let defaulted_key = DataKey::DefaultedMembers(circle_id);
-        let defaulted_members: Vec<Address> = env.storage().instance().get(&defaulted_key).unwrap_or(Vec::new(&env));
-        
+        let defaulted_members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&defaulted_key)
+            .unwrap_or(Vec::new(&env));
+
         if !defaulted_members.contains(&member) {
             panic!("Member not defaulted");
         }
@@ -1257,29 +1528,48 @@ impl SoroSusuTrait for SoroSusu {
         // Slash the collateral - distribute to group reserve
         let _token_client = token::Client::new(&env, &circle.token);
         let slash_amount = collateral_info.amount;
-        
+
         // Transfer to group reserve for distribution
-        let mut reserve: i128 = env.storage().instance().get(&DataKey::GroupReserve).unwrap_or(0);
+        let mut reserve: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::GroupReserve)
+            .unwrap_or(0);
         reserve += slash_amount;
-        env.storage().instance().set(&DataKey::GroupReserve, &reserve);
+        env.storage()
+            .instance()
+            .set(&DataKey::GroupReserve, &reserve);
 
         // Update collateral status
         collateral_info.status = CollateralStatus::Slashed;
-        env.storage().instance().set(&collateral_key, &collateral_info);
+        env.storage()
+            .instance()
+            .set(&collateral_key, &collateral_info);
     }
 
     fn release_collateral(env: Env, caller: Address, circle_id: u64, member: Address) {
         caller.require_auth();
-        
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
-        
+
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+
         if caller != circle.creator && caller != stored_admin && caller != member {
             panic!("Unauthorized");
         }
 
         let collateral_key = DataKey::CollateralVault(member.clone(), circle_id);
-        let mut collateral_info: CollateralInfo = env.storage().instance().get(&collateral_key)
+        let mut collateral_info: CollateralInfo = env
+            .storage()
+            .instance()
+            .get(&collateral_key)
             .expect("Collateral not staked");
 
         if collateral_info.status != CollateralStatus::Staked {
@@ -1288,35 +1578,57 @@ impl SoroSusuTrait for SoroSusu {
 
         // Check if member has completed all contributions
         let member_key = DataKey::Member(member.clone());
-        let member_info: Member = env.storage().instance().get(&member_key).expect("Member not found");
-        
+        let member_info: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
+
         if member_info.contribution_count < circle.max_members {
             panic!("Member has not completed all contributions");
         }
 
         // Release collateral back to member
         let token_client = token::Client::new(&env, &circle.token);
-        token_client.transfer(&env.current_contract_address(), &member, &collateral_info.amount);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &member,
+            &collateral_info.amount,
+        );
 
         // Update collateral status
         collateral_info.status = CollateralStatus::Released;
         collateral_info.release_timestamp = Some(env.ledger().timestamp());
-        env.storage().instance().set(&collateral_key, &collateral_info);
+        env.storage()
+            .instance()
+            .set(&collateral_key, &collateral_info);
     }
 
     fn mark_member_defaulted(env: Env, caller: Address, circle_id: u64, member: Address) {
         caller.require_auth();
-        
-        let circle: CircleInfo = env.storage().instance().get(&DataKey::Circle(circle_id)).expect("Circle not found");
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
-        
+
+        let circle: CircleInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+
         if caller != circle.creator && caller != stored_admin {
             panic!("Unauthorized");
         }
 
         let member_key = DataKey::Member(member.clone());
-        let mut member_info: Member = env.storage().instance().get(&member_key).expect("Member not found");
-        
+        let mut member_info: Member = env
+            .storage()
+            .instance()
+            .get(&member_key)
+            .expect("Member not found");
+
         if member_info.status == MemberStatus::Defaulted {
             panic!("Member already defaulted");
         }
@@ -1327,69 +1639,131 @@ impl SoroSusuTrait for SoroSusu {
 
         // Add to defaulted members list
         let defaulted_key = DataKey::DefaultedMembers(circle_id);
-        let mut defaulted_members: Vec<Address> = env.storage().instance().get(&defaulted_key).unwrap_or(Vec::new(&env));
-        
+        let mut defaulted_members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&defaulted_key)
+            .unwrap_or(Vec::new(&env));
+
         if !defaulted_members.contains(&member) {
             defaulted_members.push_back(member.clone());
-            env.storage().instance().set(&defaulted_key, &defaulted_members);
+            env.storage()
+                .instance()
+                .set(&defaulted_key, &defaulted_members);
         }
 
-        // Auto-slash collateral if staked
+        // Auto-slash collateral if staked (using internal helper to avoid duplicate auth)
         let collateral_key = DataKey::CollateralVault(member.clone(), circle_id);
-        if let Some(_collateral) = env.storage().instance().get::<DataKey, CollateralInfo>(&collateral_key) {
-            // Reuse slash_collateral logic
-            Self::slash_collateral(env, caller, circle_id, member);
+        if let Some(_collateral) = env
+            .storage()
+            .instance()
+            .get::<DataKey, CollateralInfo>(&collateral_key)
+        {
+            SoroSusu::slash_collateral_internal(&env, &circle, &circle_id, &member);
         }
     }
 }
 
 impl SoroSusu {
-    fn finalize_leniency_vote_internal(env: &Env, circle_id: &u64, requester: &Address, request: &mut LeniencyRequest) {
+    fn slash_collateral_internal(
+        env: &Env,
+        _circle: &CircleInfo,
+        circle_id: &u64,
+        member: &Address,
+    ) {
+        let collateral_key = DataKey::CollateralVault(member.clone(), *circle_id);
+        let mut collateral_info: CollateralInfo = env
+            .storage()
+            .instance()
+            .get(&collateral_key)
+            .expect("Collateral not staked");
+
+        if collateral_info.status != CollateralStatus::Staked {
+            panic!("Collateral not available for slashing");
+        }
+
+        let slash_amount = collateral_info.amount;
+        let mut reserve: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::GroupReserve)
+            .unwrap_or(0);
+        reserve += slash_amount;
+        env.storage()
+            .instance()
+            .set(&DataKey::GroupReserve, &reserve);
+
+        collateral_info.status = CollateralStatus::Slashed;
+        env.storage()
+            .instance()
+            .set(&collateral_key, &collateral_info);
+    }
+
+    fn finalize_leniency_vote_internal(
+        env: &Env,
+        circle_id: &u64,
+        requester: &Address,
+        request: &mut LeniencyRequest,
+    ) {
         let total_possible_votes = request.total_votes_cast;
         let minimum_participation = (total_possible_votes * MINIMUM_VOTING_PARTICIPATION) / 100;
-        
+
         let mut final_status = LeniencyRequestStatus::Rejected;
-        
+
         if request.total_votes_cast >= minimum_participation {
             let approval_percentage = (request.approve_votes * 100) / request.total_votes_cast;
             if approval_percentage >= SIMPLE_MAJORITY_THRESHOLD {
                 final_status = LeniencyRequestStatus::Approved;
-                
+
                 let circle_key = DataKey::Circle(*circle_id);
-                let mut circle: CircleInfo = env.storage().instance().get(&circle_key).expect("Circle not found");
-                
+                let mut circle: CircleInfo = env
+                    .storage()
+                    .instance()
+                    .get(&circle_key)
+                    .expect("Circle not found");
+
                 let extension_seconds = request.extension_hours * 3600;
                 let new_deadline = circle.deadline_timestamp + extension_seconds;
                 circle.deadline_timestamp = new_deadline;
                 circle.grace_period_end = Some(new_deadline);
-                
+
                 env.storage().instance().set(&circle_key, &circle);
-                
+
                 let social_capital_key = DataKey::SocialCapital(requester.clone(), *circle_id);
-                let mut social_capital: SocialCapital = env.storage().instance().get(&social_capital_key).unwrap_or(SocialCapital {
-                    member: requester.clone(),
-                    circle_id: *circle_id,
-                    leniency_given: 0,
-                    leniency_received: 0,
-                    voting_participation: 0,
-                    trust_score: 50,
-                });
+                let mut social_capital: SocialCapital = env
+                    .storage()
+                    .instance()
+                    .get(&social_capital_key)
+                    .unwrap_or(SocialCapital {
+                        member: requester.clone(),
+                        circle_id: *circle_id,
+                        leniency_given: 0,
+                        leniency_received: 0,
+                        voting_participation: 0,
+                        trust_score: 50,
+                    });
                 social_capital.leniency_received += 1;
                 social_capital.trust_score = (social_capital.trust_score + 5).min(100);
-                env.storage().instance().set(&social_capital_key, &social_capital);
+                env.storage()
+                    .instance()
+                    .set(&social_capital_key, &social_capital);
             }
         }
-        
+
         request.status = final_status.clone();
 
         let stats_key = DataKey::LeniencyStats(*circle_id);
-        let mut stats: LeniencyStats = env.storage().instance().get(&stats_key).unwrap_or(LeniencyStats {
-            total_requests: 0,
-            approved_requests: 0,
-            rejected_requests: 0,
-            expired_requests: 0,
-            average_participation: 0,
-        });
+        let mut stats: LeniencyStats =
+            env.storage()
+                .instance()
+                .get(&stats_key)
+                .unwrap_or(LeniencyStats {
+                    total_requests: 0,
+                    approved_requests: 0,
+                    rejected_requests: 0,
+                    expired_requests: 0,
+                    average_participation: 0,
+                });
 
         match final_status {
             LeniencyRequestStatus::Approved => stats.approved_requests += 1,
@@ -1398,8 +1772,11 @@ impl SoroSusu {
             _ => {}
         }
 
+        stats.total_requests += 1;
+
         if stats.total_requests > 0 {
-            let total_participation = stats.average_participation * (stats.total_requests - 1) + request.total_votes_cast;
+            let total_participation =
+                stats.average_participation * (stats.total_requests - 1) + request.total_votes_cast;
             stats.average_participation = total_participation / stats.total_requests;
         }
 
@@ -1410,6 +1787,8 @@ impl SoroSusu {
         let proposal_key = DataKey::Proposal(proposal.id);
         let mut updated_proposal = proposal.clone();
         updated_proposal.status = ProposalStatus::Executed;
-        env.storage().instance().set(&proposal_key, &updated_proposal);
+        env.storage()
+            .instance()
+            .set(&proposal_key, &updated_proposal);
     }
 }
