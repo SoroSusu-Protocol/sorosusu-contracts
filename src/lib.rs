@@ -88,6 +88,7 @@ pub enum DataKey {
     QuadraticVote(u64, Address),
     VotingPower(Address, u64),
     ProposalStats(u64),
+    RentDripAuthorization(Address, u64),
 }
 
 #[contracttype]
@@ -311,6 +312,13 @@ pub trait LendingPoolTrait {
     fn withdraw(env: Env, token: Address, to: Address, amount: i128);
 }
 
+/// Minimal interface a LeaseFlow `LeaseInstance` contract must expose to
+/// receive an "Automated Rent-Drip" payout directly from `claim_pot` (#105).
+#[contractclient(name = "LeaseInstanceClient")]
+pub trait LeaseInstanceTrait {
+    fn pay_rent(env: Env, tenant: Address, token: Address, amount: i128);
+}
+
 // --- CONTRACT TRAIT ---
 
 #[allow(clippy::too_many_arguments)]
@@ -340,6 +348,11 @@ pub trait SoroSusuTrait {
 
     fn finalize_round(env: Env, caller: Address, circle_id: u64);
     fn claim_pot(env: Env, user: Address, circle_id: u64);
+
+    // Automated Rent-Drip: let a member route their own future pot payouts
+    // straight to a LeaseFlow LeaseInstance contract instead of their wallet (#105).
+    fn authorize_rent_drip(env: Env, user: Address, circle_id: u64, lease_instance: Address);
+    fn revoke_rent_drip(env: Env, user: Address, circle_id: u64);
 
     fn trigger_insurance_coverage(env: Env, caller: Address, circle_id: u64, member: Address);
     fn eject_member(env: Env, caller: Address, circle_id: u64, member: Address);
@@ -726,7 +739,26 @@ impl SoroSusuTrait for SoroSusu {
 
         let pot_amount = circle.contribution_amount * (circle.member_count as i128);
         let token_client = token::Client::new(&env, &circle.token);
-        token_client.transfer(&env.current_contract_address(), &user, &pot_amount);
+
+        // Automated Rent-Drip (#105): if the winner authorized a LeaseFlow
+        // LeaseInstance for this circle, send the pot straight to it and let
+        // it record the rent payment, instead of paying the winner's wallet.
+        let rent_drip_key = DataKey::RentDripAuthorization(user.clone(), circle_id);
+        if let Some(lease_instance) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&rent_drip_key)
+        {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &lease_instance,
+                &pot_amount,
+            );
+            let lease_client = LeaseInstanceClient::new(&env, &lease_instance);
+            lease_client.pay_rent(&user, &circle.token, &pot_amount);
+        } else {
+            token_client.transfer(&env.current_contract_address(), &user, &pot_amount);
+        }
 
         // Auto-release collateral if member has completed all contributions
         if circle.requires_collateral {
@@ -773,6 +805,31 @@ impl SoroSusuTrait for SoroSusu {
         env.storage()
             .instance()
             .remove(&DataKey::ScheduledPayoutTime(circle_id));
+    }
+
+    fn authorize_rent_drip(env: Env, user: Address, circle_id: u64, lease_instance: Address) {
+        user.require_auth();
+
+        env.storage()
+            .instance()
+            .get::<DataKey, CircleInfo>(&DataKey::Circle(circle_id))
+            .expect("Circle not found");
+        env.storage()
+            .instance()
+            .get::<DataKey, Member>(&DataKey::Member(user.clone()))
+            .expect("Not a member of this circle");
+
+        env.storage().instance().set(
+            &DataKey::RentDripAuthorization(user, circle_id),
+            &lease_instance,
+        );
+    }
+
+    fn revoke_rent_drip(env: Env, user: Address, circle_id: u64) {
+        user.require_auth();
+        env.storage()
+            .instance()
+            .remove(&DataKey::RentDripAuthorization(user, circle_id));
     }
 
     fn trigger_insurance_coverage(env: Env, caller: Address, circle_id: u64, member: Address) {
